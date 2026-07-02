@@ -1,0 +1,379 @@
+/* ═══════════════════════════════════════════════════════
+   LTX-2.3 Video Studio — Premium Dark Glassmorphism Theme
+   ═══════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ─── Root Variables ─── */
+:root {
+    --bg-primary: #0a0a0f;
+    --bg-secondary: #12121a;
+    --bg-card: rgba(20, 20, 35, 0.7);
+    --bg-glass: rgba(255, 255, 255, 0.03);
+    --bg-glass-hover: rgba(255, 255, 255, 0.06);
+    --border-glass: rgba(255, 255, 255, 0.08);
+    --border-glow: rgba(124, 58, 237, 0.3);
+
+    --accent-primary: #7C3AED;
+    --accent-secondary: #2563EB;
+    --accent-gradient: linear-gradient(135deg, #7C3AED, #2563EB);
+    --accent-gradient-vivid: linear-gradient(135deg, #8B5CF6, #3B82F6, #06B6D4);
+    --accent-glow: rgba(124, 58, 237, 0.15);
+
+    --text-primary: #E8E8F0;
+    --text-secondary: #9CA3AF;
+    --text-muted: #6B7280;
+
+    --success: #10B981;
+    --warning: #F59E0B;
+    --error: #EF4444;
+    --info: #3B82F6;
+
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-xl: 20px;
+
+    --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.3);
+    --shadow-glow: 0 0 30px rgba(124, 58, 237, 0.1);
+
+    --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-smooth: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ─── Global Reset ─── */
+.gradio-container {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    background: var(--bg-primary) !important;
+    color: var(--text-primary) !important;
+    max-width: 100% !important;
+    padding: 0 !important;
+}
+
+.main {
+    background: var(--bg-primary) !important;
+}
+
+/* ─── Header Banner ─── */
+.header-banner {
+    background: var(--accent-gradient) !important;
+    padding: 20px 32px !important;
+    border-radius: 0 0 var(--radius-xl) var(--radius-xl) !important;
+    margin-bottom: 24px !important;
+    position: relative;
+    overflow: hidden;
+}
+
+.header-banner::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 50%);
+    animation: headerShimmer 8s ease-in-out infinite;
+}
+
+@keyframes headerShimmer {
+    0%, 100% { transform: translate(0, 0); }
+    50% { transform: translate(20%, 20%); }
+}
+
+.header-title {
+    font-size: 28px !important;
+    font-weight: 800 !important;
+    color: white !important;
+    letter-spacing: -0.5px;
+    position: relative;
+    z-index: 1;
+}
+
+.header-subtitle {
+    font-size: 14px !important;
+    color: rgba(255, 255, 255, 0.8) !important;
+    font-weight: 400;
+    position: relative;
+    z-index: 1;
+}
+
+/* ─── Card Panels ─── */
+.panel, .gr-panel {
+    background: var(--bg-card) !important;
+    backdrop-filter: blur(20px) !important;
+    -webkit-backdrop-filter: blur(20px) !important;
+    border: 1px solid var(--border-glass) !important;
+    border-radius: var(--radius-lg) !important;
+    box-shadow: var(--shadow-card) !important;
+    padding: 20px !important;
+    transition: var(--transition-smooth);
+}
+
+.panel:hover, .gr-panel:hover {
+    border-color: var(--border-glow) !important;
+    box-shadow: var(--shadow-card), var(--shadow-glow) !important;
+}
+
+/* ─── Tabs ─── */
+.tabs {
+    background: transparent !important;
+    border: none !important;
+}
+
+.tab-nav {
+    background: var(--bg-glass) !important;
+    border: 1px solid var(--border-glass) !important;
+    border-radius: var(--radius-md) !important;
+    padding: 4px !important;
+    gap: 4px !important;
+}
+
+.tab-nav button {
+    background: transparent !important;
+    color: var(--text-secondary) !important;
+    border: none !important;
+    border-radius: var(--radius-sm) !important;
+    padding: 10px 20px !important;
+    font-weight: 500 !important;
+    font-size: 14px !important;
+    transition: var(--transition-fast) !important;
+}
+
+.tab-nav button:hover {
+    background: var(--bg-glass-hover) !important;
+    color: var(--text-primary) !important;
+}
+
+.tab-nav button.selected {
+    background: var(--accent-gradient) !important;
+    color: white !important;
+    box-shadow: 0 2px 12px rgba(124, 58, 237, 0.3) !important;
+}
+
+/* ─── Input Fields ─── */
+.gr-textbox textarea,
+.gr-textbox input,
+textarea,
+input[type="text"],
+input[type="number"] {
+    background: var(--bg-glass) !important;
+    border: 1px solid var(--border-glass) !important;
+    border-radius: var(--radius-sm) !important;
+    color: var(--text-primary) !important;
+    font-family: 'Inter', sans-serif !important;
+    font-size: 14px !important;
+    padding: 12px 16px !important;
+    transition: var(--transition-fast) !important;
+}
+
+.gr-textbox textarea:focus,
+.gr-textbox input:focus,
+textarea:focus,
+input:focus {
+    border-color: var(--accent-primary) !important;
+    box-shadow: 0 0 0 3px var(--accent-glow) !important;
+    outline: none !important;
+}
+
+/* ─── Sliders ─── */
+input[type="range"] {
+    accent-color: var(--accent-primary) !important;
+}
+
+/* ─── Dropdown ─── */
+.gr-dropdown, select {
+    background: var(--bg-glass) !important;
+    border: 1px solid var(--border-glass) !important;
+    border-radius: var(--radius-sm) !important;
+    color: var(--text-primary) !important;
+    font-family: 'Inter', sans-serif !important;
+}
+
+/* ─── Buttons ─── */
+.gr-button, button.primary {
+    font-family: 'Inter', sans-serif !important;
+    font-weight: 600 !important;
+    font-size: 15px !important;
+    border-radius: var(--radius-md) !important;
+    padding: 12px 28px !important;
+    transition: var(--transition-smooth) !important;
+    position: relative;
+    overflow: hidden;
+}
+
+.generate-btn,
+button.primary,
+.gr-button-primary {
+    background: var(--accent-gradient) !important;
+    color: white !important;
+    border: none !important;
+    box-shadow: 0 4px 16px rgba(124, 58, 237, 0.3) !important;
+}
+
+.generate-btn:hover,
+button.primary:hover,
+.gr-button-primary:hover {
+    box-shadow: 0 6px 24px rgba(124, 58, 237, 0.5) !important;
+    transform: translateY(-1px);
+}
+
+.generate-btn:active,
+button.primary:active {
+    transform: translateY(0);
+}
+
+.gr-button-secondary {
+    background: var(--bg-glass) !important;
+    border: 1px solid var(--border-glass) !important;
+    color: var(--text-primary) !important;
+}
+
+.gr-button-secondary:hover {
+    background: var(--bg-glass-hover) !important;
+    border-color: var(--border-glow) !important;
+}
+
+/* ─── Progress Bar ─── */
+.progress-bar {
+    background: var(--bg-glass) !important;
+    border-radius: var(--radius-sm) !important;
+    overflow: hidden;
+    height: 8px;
+}
+
+.progress-bar .fill {
+    background: var(--accent-gradient-vivid) !important;
+    border-radius: var(--radius-sm) !important;
+    transition: width 0.5s ease;
+}
+
+/* ─── Video Player ─── */
+video {
+    border-radius: var(--radius-md) !important;
+    border: 1px solid var(--border-glass) !important;
+    box-shadow: var(--shadow-card) !important;
+}
+
+/* ─── Image Upload ─── */
+.gr-image, .gr-file {
+    background: var(--bg-glass) !important;
+    border: 2px dashed var(--border-glass) !important;
+    border-radius: var(--radius-md) !important;
+    transition: var(--transition-fast) !important;
+}
+
+.gr-image:hover, .gr-file:hover {
+    border-color: var(--accent-primary) !important;
+    background: var(--accent-glow) !important;
+}
+
+/* ─── Labels ─── */
+label, .gr-label {
+    color: var(--text-secondary) !important;
+    font-weight: 500 !important;
+    font-size: 13px !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.5px !important;
+}
+
+/* ─── Status Text / Log ─── */
+.status-text {
+    font-family: 'JetBrains Mono', monospace !important;
+    font-size: 12px !important;
+    color: var(--text-muted) !important;
+    background: rgba(0, 0, 0, 0.3) !important;
+    border-radius: var(--radius-sm) !important;
+    padding: 12px 16px !important;
+    line-height: 1.8 !important;
+    white-space: pre-wrap;
+}
+
+/* ─── Accordion ─── */
+.gr-accordion {
+    background: var(--bg-glass) !important;
+    border: 1px solid var(--border-glass) !important;
+    border-radius: var(--radius-md) !important;
+}
+
+.gr-accordion > .label-wrap {
+    color: var(--text-secondary) !important;
+}
+
+/* ─── GPU Monitor Widget ─── */
+.gpu-monitor {
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(59, 130, 246, 0.1)) !important;
+    border: 1px solid rgba(16, 185, 129, 0.2) !important;
+    border-radius: var(--radius-sm) !important;
+    padding: 8px 14px !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    font-size: 12px !important;
+    color: var(--success) !important;
+}
+
+/* ─── Markdown ─── */
+.gr-markdown, .markdown-text {
+    color: var(--text-primary) !important;
+}
+
+.gr-markdown h1, .gr-markdown h2, .gr-markdown h3 {
+    color: var(--text-primary) !important;
+    font-weight: 700 !important;
+}
+
+.gr-markdown code {
+    background: var(--bg-glass) !important;
+    color: var(--accent-primary) !important;
+    padding: 2px 6px !important;
+    border-radius: 4px !important;
+    font-family: 'JetBrains Mono', monospace !important;
+}
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--border-glass);
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+/* ─── Animation Utilities ─── */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+.generating-indicator {
+    animation: pulse 1.5s ease-in-out infinite;
+    color: var(--accent-primary) !important;
+}
+
+/* ─── Footer ─── */
+footer {
+    display: none !important;
+}
+
+/* ─── Responsive ─── */
+@media (max-width: 768px) {
+    .header-title {
+        font-size: 20px !important;
+    }
+    .panel {
+        padding: 12px !important;
+    }
+}
