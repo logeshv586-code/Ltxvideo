@@ -1,79 +1,111 @@
 # 🎬 LTX-2.3 Video Studio
 
-A local AI video generation platform powered by **Lightricks' LTX-2.3** — a 22-billion parameter DiT-based audio-video foundation model.
+Local text-to-video and image-to-video generation using Lightricks LTX-2.3 with synchronized audio.
 
-## ✨ Features
+This branch is tuned for a **16 GB NVIDIA GPU**. It uses the distilled LTX pipeline, FP8-cast weights, automatic CPU/disk offload, and keeps the initialized model alive between generations for faster repeated runs.
 
-- **Text-to-Video (T2V)**: Generate videos from text descriptions
-- **Image-to-Video (I2V)**: Animate static images with AI-driven motion
-- **Multi-Clip Continuation**: Chain 10-second clips for up to 30s videos with visual continuity
-- **Premium Web UI**: Dark glassmorphism Gradio interface with prompt presets
-- **Memory Optimized**: Runs on GPUs with as low as 6GB VRAM via CPU offloading
+## Recommended 16 GB profile
 
-## 🚀 Quick Start
+- Resolution: **512×320**
+- Duration: **97 frames / ~4 seconds**
+- Pipeline: **LTX-2.3 distilled**
+- Quantization: **FP8-cast**
+- Offload: **automatic**
+  - 40 GB+ system RAM: CPU offload/cache
+  - lower RAM: disk offload
+- Model stays loaded after generation to reduce repeated startup cost
 
-### 1. Install Dependencies
-```bash
-# Create virtual environment
+## Features
+
+- Text-to-video
+- Image-to-video using first-frame conditioning
+- LTX-generated synchronized audio muxed directly into MP4
+- Multi-clip continuation from the last frame of the previous clip
+- Gradio browser UI
+- Low/fast and higher-quality resolution presets
+
+## Windows setup
+
+### 1. Create and activate a virtual environment
+
+```powershell
 python -m venv venv
-venv\Scripts\activate   # Windows
-
-# Install PyTorch with CUDA
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-
-# Install other dependencies
+venv\Scripts\activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 2. Download Models (~50-60GB)
-```bash
+### 2. Install the official LTX runtime
+
+```powershell
+python setup_ltx.py
+```
+
+`setup_ltx.py` clones the official `Lightricks/LTX-2` source into `vendor/LTX-2`, pins it to a tested upstream commit, and installs `ltx-core` + `ltx-pipelines` into the active Python environment.
+
+### 3. Authenticate with Hugging Face
+
+The official Gemma encoder may require accepting its model terms first.
+
+```powershell
+hf auth login
+```
+
+### 4. Download the model assets
+
+```powershell
 python download_models.py
 ```
 
-### 3. Launch the UI
-```bash
+To verify an existing model folder without downloading:
+
+```powershell
+python download_models.py --check
+```
+
+Required assets are:
+
+- `ltx-2.3-22b-distilled-1.1.safetensors`
+- `ltx-2.3-spatial-upscaler-x2-1.1.safetensors`
+- `google/gemma-3-12b-it-qat-q4_0-unquantized`
+
+### 5. Launch
+
+```powershell
 python app.py
 ```
 
-Open your browser to `http://localhost:7860`
+Open `http://localhost:7860` if the browser does not open automatically.
 
-## 📐 Technical Notes
+## Fastest practical settings on 16 GB VRAM
 
-- **Resolution**: Must be divisible by 32
-- **Frame Count**: Follows `8k+1` pattern (49, 97, 121, 161, 193, 241)
-- **FPS**: 24 frames per second
-- **Continuation**: Last frame of each clip conditions the next clip
+Start with **384×256 + 49 frames** when testing prompts. Once a prompt is good, move to the recommended **512×320 + 97 frames** preset. Higher resolutions and longer clips increase generation time substantially.
 
-## 🖥️ System Requirements
+Do not enable `torch.compile` by default on a 16 GB card. It can increase peak memory and makes the first run slower. This app instead prioritizes FP8-cast, distilled sampling, automatic tiling and model reuse.
 
-| Component | Minimum | Recommended |
-|-----------|---------|-------------|
-| GPU VRAM  | 6 GB (with CPU offload) | 24 GB+ |
-| System RAM | 16 GB | 32 GB+ |
-| Storage | 100 GB free | 150 GB+ |
-| Python | 3.10+ | 3.12 |
-| CUDA | 12.x | 12.4+ |
+## Important behavior
 
-## 📁 Project Structure
+The distilled LTX pipeline uses its trained fixed sampling schedule. The legacy UI still accepts the old inference-step and guidance controls for compatibility, but the local distilled engine does not override the model's fixed schedule with those values.
 
-```
-e:\video\
-├── app.py                  # Gradio web UI
-├── config.py               # Configuration & presets
-├── download_models.py      # Model downloader
-├── requirements.txt        # Dependencies
-├── engine/
-│   ├── generator.py        # Core T2V/I2V engine
-│   ├── continuation.py     # Multi-clip system
-│   ├── memory_manager.py   # VRAM optimization
-│   └── video_processor.py  # Video utilities
-├── static/style.css        # UI theme
-├── models/                 # Downloaded weights
-└── outputs/                # Generated videos
+Single-clip output preserves LTX's synchronized audio. Multi-clip continuation currently joins generated MP4 clips using the existing continuation processor; video continuity works through last-frame conditioning.
+
+## Troubleshooting
+
+If `python app.py` reports that `ltx_pipelines` or `ltx_core` is unavailable, run:
+
+```powershell
+python setup_ltx.py
 ```
 
-## 🔗 Credits
+If model loading reports missing assets, run:
 
-- **Model**: [Lightricks/LTX-2.3](https://huggingface.co/Lightricks/LTX-2.3)
-- **Repository**: [Lightricks/LTX-2](https://github.com/Lightricks/LTX-2)
-- **Paper**: [arXiv 2601.03233](https://arxiv.org/abs/2601.03233)
+```powershell
+python download_models.py --check
+```
+
+If Hugging Face returns `401` or `403`, accept the required model terms on Hugging Face and run `hf auth login` again.
+
+## Upstream
+
+- LTX source: `Lightricks/LTX-2`
+- LTX-2.3 model: `Lightricks/LTX-2.3`
