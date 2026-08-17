@@ -1,4 +1,4 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -8,6 +8,7 @@ __pycache__/
 venv/
 env/
 ENV/
+.venv/
 
 # Model weights
 models/
@@ -17,9 +18,9 @@ models/
 *.pt
 *.pth
 
-# Outputs
+# Generated media
 outputs/
 
-# OS generated files
+# OS files
 .DS_Store
 Thumbs.db
