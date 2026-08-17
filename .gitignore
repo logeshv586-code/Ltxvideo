@@ -10,6 +10,9 @@ env/
 ENV/
 .venv/
 
+# Official LTX runtime checkout created by setup_ltx.py
+vendor/
+
 # Model weights
 models/
 *.safetensors
