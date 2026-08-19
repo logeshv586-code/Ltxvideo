@@ -1,5 +1,12 @@
 import unittest
-from config import DURATION_PRESETS, MAX_NATIVE_FRAMES, RESOLUTION_PRESETS
+from config import (
+    ACTION_STYLES,
+    COMICS_STYLES,
+    DURATION_PRESETS,
+    MAX_NATIVE_FRAMES,
+    REAL_WORLD_STYLES,
+    RESOLUTION_PRESETS,
+)
 
 
 class ConfigTests(unittest.TestCase):
@@ -12,6 +19,11 @@ class ConfigTests(unittest.TestCase):
         for frames in DURATION_PRESETS.values():
             self.assertEqual((frames - 1) % 8, 0)
             self.assertLessEqual(frames, MAX_NATIVE_FRAMES)
+
+    def test_directed_studio_presets_exist(self):
+        self.assertGreaterEqual(len(COMICS_STYLES), 4)
+        self.assertGreaterEqual(len(REAL_WORLD_STYLES), 4)
+        self.assertGreaterEqual(len(ACTION_STYLES), 4)
 
 
 if __name__ == "__main__":
