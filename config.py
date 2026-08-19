@@ -1,111 +1,83 @@
-"""
-LTX-2.3 Video Generation Platform — Configuration
-Model paths, resolution presets, and default generation parameters.
-"""
+"""LTX Cartoon Studio configuration tuned for RTX 4050 / 16 GB RAM laptops."""
+from __future__ import annotations
 
 import os
 from pathlib import Path
 
-# ──────────────────────────────────────────────
-# Project Paths
-# ──────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).parent.resolve()
 MODELS_DIR = PROJECT_ROOT / "models"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 STATIC_DIR = PROJECT_ROOT / "static"
+OFFLOAD_DIR = MODELS_DIR / "offload"
+HF_CACHE_DIR = MODELS_DIR / "hf-cache"
+for directory in (MODELS_DIR, OUTPUTS_DIR, STATIC_DIR, OFFLOAD_DIR, HF_CACHE_DIR):
+    directory.mkdir(parents=True, exist_ok=True)
 
-# Create directories
-MODELS_DIR.mkdir(exist_ok=True)
-OUTPUTS_DIR.mkdir(exist_ok=True)
-STATIC_DIR.mkdir(exist_ok=True)
-
-# ──────────────────────────────────────────────
-# HuggingFace Model Repository
-# ──────────────────────────────────────────────
-HF_REPO_ID = "Lightricks/LTX-2.3"
-
-MODEL_FILES = {
-    "checkpoint": {
-        "filename": "ltx-2.3-22b-distilled-1.1.safetensors",
-        "description": "Distilled model checkpoint (22B params, optimized for 8-step inference)",
-    },
-    "spatial_upscaler": {
-        "filename": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
-        "description": "2x spatial resolution upscaler",
-    },
-    "distilled_lora": {
-        "filename": "ltx-2.3-22b-distilled-lora-384-1.1.safetensors",
-        "description": "Distilled LoRA for Stage 2 refinement",
-    },
-}
-
-GEMMA_REPO_ID = "google/gemma-3-4b-it"
-GEMMA_DIR = MODELS_DIR / "gemma-3-4b-it"
-
-# ──────────────────────────────────────────────
-# Resolution Presets (safe for 6GB VRAM)
-# Width and height must be divisible by 32
-# ──────────────────────────────────────────────
-RESOLUTION_PRESETS = {
-    "Low (384×256) — Fastest": {"width": 384, "height": 256},
-    "Medium (512×320) — Balanced": {"width": 512, "height": 320},
-    "High (640×384) — Better Quality": {"width": 640, "height": 384},
-    "HD (768×512) — Slow, High Quality": {"width": 768, "height": 512},
-}
-
-DEFAULT_RESOLUTION = "Medium (512×320) — Balanced"
-
-# ──────────────────────────────────────────────
-# Frame Count Presets
-# Frame count must follow 8k+1 pattern (e.g., 97, 121, 161, 193, 241)
-# At 24fps: 97 frames ≈ 4s, 121 ≈ 5s, 161 ≈ 6.7s, 193 ≈ 8s, 241 ≈ 10s
-# ──────────────────────────────────────────────
-DURATION_PRESETS = {
-    "2 seconds (49 frames)": 49,      # 8*6+1
-    "4 seconds (97 frames)": 97,      # 8*12+1
-    "5 seconds (121 frames)": 121,    # 8*15+1
-    "7 seconds (161 frames)": 161,    # 8*20+1
-    "8 seconds (193 frames)": 193,    # 8*24+1
-    "10 seconds (241 frames)": 241,   # 8*30+1
-}
-
-DEFAULT_DURATION = "5 seconds (121 frames)"
-
-# ──────────────────────────────────────────────
-# Generation Defaults
-# ──────────────────────────────────────────────
-DEFAULT_NUM_INFERENCE_STEPS = 8       # Distilled model needs fewer steps
-DEFAULT_GUIDANCE_SCALE = 3.0
-DEFAULT_FPS = 24
-DEFAULT_SEED = -1                     # -1 = random
-MAX_CONTINUATION_CLIPS = 3           # Up to 3 clips for 30s total
-CROSSFADE_DURATION = 0.5             # Seconds of crossfade between clips
-
-# ──────────────────────────────────────────────
-# Memory Optimization (for 6GB VRAM)
-# ──────────────────────────────────────────────
-ENABLE_CPU_OFFLOAD = True
-ENABLE_VAE_SLICING = True
+HF_REPO_ID = "Lightricks/LTX-Video"
+MODEL_VARIANT = "LTX-Video 0.9.8 / 2B low-memory Diffusers path"
+DEFAULT_FPS = 30
+GPU_MEMORY_BUDGET = "5GiB"
+CPU_MEMORY_BUDGET = "8GiB"
+ENABLE_8BIT = True
 ENABLE_VAE_TILING = True
-ENABLE_ATTENTION_SLICING = True
-TORCH_DTYPE = "bfloat16"             # or "float16" for older GPUs
 
-# ──────────────────────────────────────────────
-# Environment Variables (set at startup)
-# ──────────────────────────────────────────────
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-# ──────────────────────────────────────────────
-# Prompt Presets
-# ──────────────────────────────────────────────
-PROMPT_PRESETS = {
-    "🐰 Cartoon Rhyme": "A cute animated cartoon rabbit hopping joyfully through a sunlit meadow full of colorful flowers, vibrant 3D animation style, children's cartoon, bright pastel colors, smooth motion, whimsical and playful atmosphere",
-    "🌆 Cinematic City": "A sweeping cinematic aerial shot of a futuristic city at golden hour, towering glass skyscrapers reflecting warm sunlight, flying vehicles weaving between buildings, volumetric fog, 4K, ultra detailed, movie quality",
-    "🌊 Ocean Waves": "A breathtaking slow-motion shot of turquoise ocean waves crashing on a pristine white sandy beach, crystal clear water, golden sunset light, photorealistic, 4K, National Geographic quality",
-    "🚀 Sci-Fi Space": "A massive spaceship emerging from hyperspace near a ringed planet, stars streaking in the background, detailed hull with glowing engines, cinematic lighting, epic science fiction scene, 4K",
-    "🎨 Abstract Art": "An abstract fluid art animation, vibrant swirling colors of deep purple, electric blue, and molten gold, organic flowing movements, mesmerizing patterns, smooth transitions, artistic and hypnotic",
-    "🌸 Nature Close-up": "An extreme macro close-up of a dewdrop on a rose petal, morning sunlight creating rainbow refractions, shallow depth of field, photorealistic, 8K detail, time-lapse of the dewdrop slowly sliding",
-    "🏰 Fantasy World": "A magical fantasy castle perched on a floating island in the sky, waterfalls cascading off the edges into clouds below, dragons soaring around the towers, golden hour lighting, Studio Ghibli inspired",
-    "🎭 Realistic Portrait": "A photorealistic portrait of a person standing in falling autumn leaves, warm golden backlight, shallow depth of field, cinematic color grading, gentle wind blowing hair, 4K ultra detailed",
+RESOLUTION_PRESETS = {
+    "4050 Fast • 384×224 • 16:9": {"width": 384, "height": 224, "risk": "low"},
+    "4050 Balanced • 512×288 • 16:9": {"width": 512, "height": 288, "risk": "medium"},
+    "4050 Portrait • 288×512 • 9:16": {"width": 288, "height": 512, "risk": "medium"},
+    "4050 Square • 384×384 • 1:1": {"width": 384, "height": 384, "risk": "medium"},
+    "4050 Cinema • 512×224": {"width": 512, "height": 224, "risk": "medium"},
 }
+DEFAULT_RESOLUTION = "4050 Fast • 384×224 • 16:9"
+
+DURATION_PRESETS = {
+    "1.6 sec • 49 frames • safest": 49,
+    "3.2 sec • 97 frames • fast": 97,
+    "4.0 sec • 121 frames • recommended": 121,
+    "5.4 sec • 161 frames • heavier": 161,
+    "6.4 sec • 193 frames • heavy": 193,
+    "8.0 sec • 241 frames • max practical": 241,
+}
+DEFAULT_DURATION = "4.0 sec • 121 frames • recommended"
+MAX_NATIVE_FRAMES = 241
+MAX_STORY_SCENES = 24
+DEFAULT_STORY_SCENES = 4
+DEFAULT_NUM_INFERENCE_STEPS = 20
+DEFAULT_GUIDANCE_SCALE = 3.0
+DEFAULT_SEED = -1
+
+NEGATIVE_PROMPT = (
+    "worst quality, inconsistent motion, jitter, flicker, blurry, deformed, "
+    "duplicate character, changing costume, changing face, watermark, text artifacts"
+)
+
+CARTOON_STYLES = {
+    "Premium 3D Kids Animation": "premium stylized 3D family animation, soft global illumination, expressive faces, polished materials, colorful cinematic lighting",
+    "Claymation": "handmade claymation, tactile clay texture, miniature sets, charming stop-motion feel, soft studio lighting",
+    "2D Storybook": "high-end 2D storybook animation, clean line art, painterly backgrounds, appealing shapes, rich color harmony",
+    "Anime Adventure": "polished anime film style, expressive character acting, detailed painted backgrounds, dynamic cinematic composition",
+    "Soft Ghibli-inspired": "gentle hand-painted fantasy animation, warm natural light, whimsical environment, soft expressive movement",
+    "Comic Toon": "bold cartoon illustration, clean cel shading, energetic poses, colorful graphic shapes, playful cinematic motion",
+}
+
+CAMERA_PRESETS = [
+    "gentle dolly in",
+    "slow cinematic pan",
+    "stable medium tracking shot",
+    "wide establishing shot with subtle parallax",
+    "character close-up with soft push-in",
+]
+
+EXPORT_PRESETS = {
+    "Native MP4": None,
+    "720p Landscape": (1280, 720),
+    "1080p Landscape": (1920, 1080),
+    "720p Portrait": (720, 1280),
+    "1080p Portrait": (1080, 1920),
+    "1080p Square": (1080, 1080),
+}
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+os.environ.setdefault("HF_HOME", str(HF_CACHE_DIR))

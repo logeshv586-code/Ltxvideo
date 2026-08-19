@@ -1,565 +1,210 @@
-"""
-LTX-2.3 Video Studio — Premium Gradio Web Interface
-A dark-themed, glassmorphism UI for local AI video generation.
-"""
+"""LTX Cartoon Studio — premium local UI for RTX 4050 laptops."""
+from __future__ import annotations
 
-import sys
-import threading
-import time
 from datetime import datetime
 from pathlib import Path
 
 import gradio as gr
-from PIL import Image
 
-sys.path.insert(0, str(Path(__file__).parent))
 from config import (
+    CARTOON_STYLES,
     DEFAULT_DURATION,
     DEFAULT_GUIDANCE_SCALE,
     DEFAULT_NUM_INFERENCE_STEPS,
     DEFAULT_RESOLUTION,
+    DEFAULT_STORY_SCENES,
     DURATION_PRESETS,
+    EXPORT_PRESETS,
+    MAX_STORY_SCENES,
+    NEGATIVE_PROMPT,
     OUTPUTS_DIR,
-    PROMPT_PRESETS,
     RESOLUTION_PRESETS,
 )
-from engine.continuation import ContinuationGenerator
 from engine.generator import VideoGenerator
-from engine.memory_manager import get_system_info, get_vram_usage_str
+from engine.memory_manager import get_status_markdown
+from engine.storyboard import CartoonStoryGenerator, storyboard_markdown
+from engine.video_processor import export_delivery
 
-# ──────────────────────────────────────────────
-# Global State
-# ──────────────────────────────────────────────
-generator = VideoGenerator()
-continuation_gen = ContinuationGenerator(generator)
-
-# Load CSS
+GENERATOR = VideoGenerator()
+STORY_GENERATOR = CartoonStoryGenerator(GENERATOR)
 CSS_PATH = Path(__file__).parent / "static" / "style.css"
 CUSTOM_CSS = CSS_PATH.read_text(encoding="utf-8") if CSS_PATH.exists() else ""
 
 
-# ──────────────────────────────────────────────
-# Helper Functions
-# ──────────────────────────────────────────────
-def get_system_status() -> str:
-    """Get formatted system status string."""
-    info = get_system_info()
-    gpu_name = info.gpu.name if info.gpu else "No GPU"
-    vram = f"{info.gpu.vram_total_gb:.1f}GB" if info.gpu else "N/A"
-    ram = f"{info.ram_available_gb:.0f}/{info.ram_total_gb:.0f}GB"
-    return f"🖥️ {gpu_name} | VRAM: {vram} | RAM: {ram}"
+def _resolve(resolution: str, duration: str) -> tuple[int, int, int]:
+    res = RESOLUTION_PRESETS[resolution]
+    return res["width"], res["height"], DURATION_PRESETS[duration]
 
 
-def apply_preset(preset_name: str) -> str:
-    """Apply a prompt preset."""
-    return PROMPT_PRESETS.get(preset_name, "")
+def _delivery(path: Path, preset: str) -> Path:
+    target = EXPORT_PRESETS.get(preset)
+    if target is None:
+        return path
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out = OUTPUTS_DIR / f"delivery_{target[0]}x{target[1]}_{stamp}.mp4"
+    return export_delivery(path, out, *target)
 
 
-# ──────────────────────────────────────────────
-# Generation Functions
-# ──────────────────────────────────────────────
-def generate_t2v(
-    prompt: str,
-    negative_prompt: str,
-    resolution: str,
-    duration: str,
-    num_steps: int,
-    guidance_scale: float,
-    seed: int,
-    num_clips: int,
-    progress=gr.Progress(track_tqdm=True),
-):
-    """Generate text-to-video with optional continuation."""
-    if not prompt.strip():
-        gr.Warning("Please enter a prompt!")
-        return None, "⚠️ No prompt provided"
-
-    res = RESOLUTION_PRESETS.get(resolution, RESOLUTION_PRESETS[DEFAULT_RESOLUTION])
-    n_frames = DURATION_PRESETS.get(duration, DURATION_PRESETS[DEFAULT_DURATION])
-
-    status_log = []
-
-    def progress_callback(message: str, prog: float) -> None:
-        status_log.append(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
-        if prog >= 0:
-            progress(prog, desc=message)
-
-    try:
-        if num_clips <= 1:
-            # Single clip generation
-            output_path = generator.generate_text_to_video(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                width=res["width"],
-                height=res["height"],
-                num_frames=n_frames,
-                num_inference_steps=num_steps,
-                guidance_scale=guidance_scale,
-                seed=seed,
-                progress_callback=progress_callback,
-            )
-        else:
-            # Multi-clip continuation
-            output_path = continuation_gen.generate_continuation(
-                prompt=prompt,
-                num_clips=num_clips,
-                negative_prompt=negative_prompt,
-                width=res["width"],
-                height=res["height"],
-                frames_per_clip=n_frames,
-                num_inference_steps=num_steps,
-                guidance_scale=guidance_scale,
-                seed=seed,
-                progress_callback=progress_callback,
-            )
-
-        status_text = "\n".join(status_log[-10:])  # Last 10 messages
-        return str(output_path), f"✅ Generation complete!\n\n{status_text}"
-
-    except Exception as e:
-        error_msg = str(e)
-        status_log.append(f"❌ Error: {error_msg}")
-        gr.Error(f"Generation failed: {error_msg}")
-        return None, "\n".join(status_log[-10:])
+def _progress_bridge(progress, logs: list[str]):
+    def callback(message: str, value: float) -> None:
+        logs.append(message)
+        if value >= 0:
+            progress(min(1.0, max(0.0, value)), desc=message)
+    return callback
 
 
-def generate_i2v(
-    prompt: str,
-    image: Image.Image | None,
-    negative_prompt: str,
-    resolution: str,
-    duration: str,
-    num_steps: int,
-    guidance_scale: float,
-    seed: int,
-    num_clips: int,
-    progress=gr.Progress(track_tqdm=True),
-):
-    """Generate image-to-video with optional continuation."""
-    if not prompt.strip():
-        gr.Warning("Please enter a prompt describing the motion!")
-        return None, "⚠️ No prompt provided"
-
+def generate_single(prompt, image, negative, resolution, duration, steps, guidance, seed, export_preset, progress=gr.Progress()):
+    if not prompt or not prompt.strip():
+        raise gr.Error("Enter a prompt first.")
+    width, height, frames = _resolve(resolution, duration)
+    logs: list[str] = []
+    callback = _progress_bridge(progress, logs)
     if image is None:
-        gr.Warning("Please upload an image!")
-        return None, "⚠️ No image provided"
-
-    res = RESOLUTION_PRESETS.get(resolution, RESOLUTION_PRESETS[DEFAULT_RESOLUTION])
-    n_frames = DURATION_PRESETS.get(duration, DURATION_PRESETS[DEFAULT_DURATION])
-
-    status_log = []
-
-    def progress_callback(message: str, prog: float) -> None:
-        status_log.append(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
-        if prog >= 0:
-            progress(prog, desc=message)
-
-    try:
-        if num_clips <= 1:
-            output_path = generator.generate_image_to_video(
-                prompt=prompt,
-                image=image,
-                negative_prompt=negative_prompt,
-                width=res["width"],
-                height=res["height"],
-                num_frames=n_frames,
-                num_inference_steps=num_steps,
-                guidance_scale=guidance_scale,
-                seed=seed,
-                progress_callback=progress_callback,
-            )
-        else:
-            output_path = continuation_gen.generate_continuation(
-                prompt=prompt,
-                num_clips=num_clips,
-                negative_prompt=negative_prompt,
-                width=res["width"],
-                height=res["height"],
-                frames_per_clip=n_frames,
-                num_inference_steps=num_steps,
-                guidance_scale=guidance_scale,
-                seed=seed,
-                first_image=image,
-                progress_callback=progress_callback,
-            )
-
-        status_text = "\n".join(status_log[-10:])
-        return str(output_path), f"✅ Generation complete!\n\n{status_text}"
-
-    except Exception as e:
-        error_msg = str(e)
-        status_log.append(f"❌ Error: {error_msg}")
-        gr.Error(f"Generation failed: {error_msg}")
-        return None, "\n".join(status_log[-10:])
+        path = GENERATOR.generate_text_to_video(prompt, negative, width, height, frames, steps, guidance, int(seed), callback)
+    else:
+        path = GENERATOR.generate_image_to_video(prompt, image, negative, width, height, frames, steps, guidance, int(seed), callback)
+    final = _delivery(Path(path), export_preset)
+    return str(final), "\n".join(logs[-12:])
 
 
-# ──────────────────────────────────────────────
-# Build the Gradio Interface
-# ──────────────────────────────────────────────
+def preview_story(story, scene_count, style, character_bible):
+    return storyboard_markdown(story, int(scene_count), style, character_bible)
+
+
+def generate_story(story, character_bible, style, scene_count, reference_image, resolution, duration, steps, guidance, seed, negative, export_preset, progress=gr.Progress()):
+    if not story or not story.strip():
+        raise gr.Error("Write the story or one scene beat per line.")
+    width, height, frames = _resolve(resolution, duration)
+    logs: list[str] = []
+    callback = _progress_bridge(progress, logs)
+    path = STORY_GENERATOR.generate(
+        story=story,
+        character_bible=character_bible,
+        style_name=style,
+        scene_count=int(scene_count),
+        reference_image=reference_image,
+        width=width,
+        height=height,
+        frames_per_scene=frames,
+        num_inference_steps=int(steps),
+        guidance_scale=float(guidance),
+        negative_prompt=negative,
+        seed=int(seed),
+        progress_callback=callback,
+    )
+    final = _delivery(Path(path), export_preset)
+    total = (frames / 30.0) * int(scene_count)
+    logs.append(f"Approx story duration: {total:.1f}s before joins/encoding adjustments")
+    return str(final), "\n".join(logs[-20:])
+
+
 def create_app() -> gr.Blocks:
-    """Build the premium Gradio interface."""
     theme = gr.themes.Base(
-        primary_hue=gr.themes.colors.purple,
-        secondary_hue=gr.themes.colors.blue,
-        neutral_hue=gr.themes.colors.gray,
-        font=gr.themes.GoogleFont("Inter"),
-        font_mono=gr.themes.GoogleFont("JetBrains Mono"),
-    ).set(
-        body_background_fill="#0a0a0f",
-        body_background_fill_dark="#0a0a0f",
-        block_background_fill="rgba(20, 20, 35, 0.7)",
-        block_background_fill_dark="rgba(20, 20, 35, 0.7)",
-        block_border_color="rgba(255, 255, 255, 0.08)",
-        block_border_color_dark="rgba(255, 255, 255, 0.08)",
-        block_label_text_color="#9CA3AF",
-        block_label_text_color_dark="#9CA3AF",
-        block_title_text_color="#E8E8F0",
-        block_title_text_color_dark="#E8E8F0",
-        body_text_color="#E8E8F0",
-        body_text_color_dark="#E8E8F0",
-        body_text_color_subdued="#6B7280",
-        body_text_color_subdued_dark="#6B7280",
-        button_primary_background_fill="linear-gradient(135deg, #7C3AED, #2563EB)",
-        button_primary_background_fill_dark="linear-gradient(135deg, #7C3AED, #2563EB)",
-        button_primary_text_color="white",
-        button_primary_text_color_dark="white",
-        input_background_fill="rgba(255, 255, 255, 0.03)",
-        input_background_fill_dark="rgba(255, 255, 255, 0.03)",
-        input_border_color="rgba(255, 255, 255, 0.08)",
-        input_border_color_dark="rgba(255, 255, 255, 0.08)",
-        shadow_drop="0 4px 24px rgba(0, 0, 0, 0.3)",
-        shadow_drop_lg="0 8px 48px rgba(0, 0, 0, 0.4)",
+        primary_hue=gr.themes.colors.violet,
+        secondary_hue=gr.themes.colors.cyan,
+        neutral_hue=gr.themes.colors.slate,
     )
 
-    with gr.Blocks(
-        title="LTX-2.3 Video Studio",
-        theme=theme,
-        css=CUSTOM_CSS,
-    ) as app:
-        # ─── Header ───
+    with gr.Blocks(title="LTX Cartoon Studio", theme=theme, css=CUSTOM_CSS) as app:
         gr.HTML("""
-        <div class="header-banner" style="
-            background: linear-gradient(135deg, #7C3AED, #2563EB, #06B6D4);
-            padding: 24px 32px;
-            border-radius: 0 0 16px 16px;
-            margin-bottom: 16px;
-            position: relative;
-            overflow: hidden;
-        ">
-            <div style="position: relative; z-index: 1;">
-                <div style="display: flex; align-items: center; justify-content: space-between;">
-                    <div>
-                        <h1 style="font-size: 28px; font-weight: 800; color: white; margin: 0; letter-spacing: -0.5px;">
-                            🎬 LTX-2.3 Video Studio
-                        </h1>
-                        <p style="font-size: 14px; color: rgba(255,255,255,0.8); margin: 4px 0 0 0;">
-                            AI-Powered Video Generation • Text-to-Video • Image-to-Video • Multi-Clip Continuation
-                        </p>
-                    </div>
-                    <div style="
-                        background: rgba(0,0,0,0.2);
-                        padding: 8px 16px;
-                        border-radius: 8px;
-                        font-family: 'JetBrains Mono', monospace;
-                        font-size: 12px;
-                        color: rgba(255,255,255,0.9);
-                    ">
-                        🖥️ Local Generation • Open Source
-                    </div>
-                </div>
-            </div>
-        </div>
+        <section class="hero-shell">
+          <div class="hero-kicker">LOCAL • OFFLINE AFTER FIRST DOWNLOAD • RTX 4050 PROFILE</div>
+          <h1>LTX <span>Cartoon Studio</span></h1>
+          <p>Create cinematic clips, animate references, and build continuous cartoon stories scene-by-scene on a laptop GPU.</p>
+          <div class="hero-pills"><b>2B LTX</b><b>8-bit memory mode</b><b>Story continuity</b><b>16:9 • 9:16 • 1:1</b></div>
+        </section>
         """)
 
-        # ─── System Status Bar ───
         with gr.Row():
-            system_status = gr.Textbox(
-                value=get_system_status(),
-                label="System Status",
-                interactive=False,
-                elem_classes=["gpu-monitor"],
-                scale=4,
-            )
-            refresh_btn = gr.Button("🔄 Refresh", size="sm", scale=1)
-            refresh_btn.click(fn=get_system_status, outputs=system_status)
+            hardware = gr.Markdown(get_status_markdown(), elem_classes=["status-card"])
+            refresh = gr.Button("Refresh hardware", elem_classes=["soft-btn"])
+            refresh.click(get_status_markdown, outputs=hardware)
 
-        # ─── Main Content ───
-        with gr.Tabs() as tabs:
-            # ══════════════════════════════════
-            # TAB 1: TEXT-TO-VIDEO
-            # ══════════════════════════════════
-            with gr.Tab("✨ Text to Video", id="t2v"):
+        with gr.Tabs():
+            with gr.Tab("🎬 Create Video"):
                 with gr.Row(equal_height=False):
-                    # Left: Controls
-                    with gr.Column(scale=2):
-                        # Prompt Preset
-                        t2v_preset = gr.Dropdown(
-                            choices=[""] + list(PROMPT_PRESETS.keys()),
-                            label="🎨 Prompt Presets",
-                            value="",
-                            interactive=True,
+                    with gr.Column(scale=5):
+                        image = gr.Image(type="pil", label="Optional reference image", height=220)
+                        prompt = gr.Textbox(
+                            label="Video description",
+                            placeholder="Describe subject, action, environment, camera movement, lighting and visual style…",
+                            lines=6,
                         )
+                        negative = gr.Textbox(label="Avoid", value=NEGATIVE_PROMPT, lines=2)
+                        with gr.Row():
+                            resolution = gr.Dropdown(list(RESOLUTION_PRESETS), value=DEFAULT_RESOLUTION, label="Native generation size")
+                            duration = gr.Dropdown(list(DURATION_PRESETS), value=DEFAULT_DURATION, label="Clip duration")
+                        with gr.Row():
+                            export_preset = gr.Dropdown(list(EXPORT_PRESETS), value="Native MP4", label="Download size")
+                            seed = gr.Number(value=-1, precision=0, label="Seed (-1 random)")
+                        with gr.Accordion("Advanced", open=False):
+                            steps = gr.Slider(8, 40, value=DEFAULT_NUM_INFERENCE_STEPS, step=1, label="Inference steps")
+                            guidance = gr.Slider(1.0, 7.0, value=DEFAULT_GUIDANCE_SCALE, step=0.1, label="Guidance")
+                        generate = gr.Button("Generate video", variant="primary", elem_classes=["primary-action"])
+                    with gr.Column(scale=6):
+                        output = gr.Video(label="Generated video", autoplay=True, height=470)
+                        status = gr.Textbox(label="Generation status", lines=8, interactive=False)
+                generate.click(generate_single, [prompt, image, negative, resolution, duration, steps, guidance, seed, export_preset], [output, status])
 
-                        # Prompt
-                        t2v_prompt = gr.Textbox(
-                            label="📝 Prompt",
-                            placeholder="Describe the video you want to create...\n\nTip: Be specific about motion, camera angles, lighting, and style.",
+            with gr.Tab("🧸 Cartoon Story Studio"):
+                gr.Markdown("Build a long story from short LTX scenes. The final frame of each scene becomes the visual reference for the next scene, while the **character bible** is injected into every prompt.")
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=5):
+                        story = gr.Textbox(
+                            label="Story / scene beats",
+                            placeholder="One line per scene works best.\nScene 1: Milo discovers a glowing moon-cookie…\nScene 2: The cookie rolls into a tiny rocket…",
+                            lines=9,
+                        )
+                        character_bible = gr.Textbox(
+                            label="Character bible — keep this exact across scenes",
+                            placeholder="Milo: small orange fox, teal scarf, green eyes, rounded ears. Luna: tiny blue robot, yellow screen face…",
                             lines=4,
-                            max_lines=8,
                         )
+                        reference = gr.Image(type="pil", label="Optional character/style reference for Scene 1", height=210)
+                        with gr.Row():
+                            style = gr.Dropdown(list(CARTOON_STYLES), value="Premium 3D Kids Animation", label="Cartoon style")
+                            scene_count = gr.Slider(1, MAX_STORY_SCENES, value=DEFAULT_STORY_SCENES, step=1, label="Scenes")
+                        with gr.Row():
+                            story_resolution = gr.Dropdown(list(RESOLUTION_PRESETS), value=DEFAULT_RESOLUTION, label="Scene size")
+                            story_duration = gr.Dropdown(list(DURATION_PRESETS), value=DEFAULT_DURATION, label="Seconds per scene")
+                        with gr.Row():
+                            story_export = gr.Dropdown(list(EXPORT_PRESETS), value="Native MP4", label="Final download size")
+                            story_seed = gr.Number(value=1001, precision=0, label="Base seed")
+                        with gr.Accordion("Story generation advanced", open=False):
+                            story_steps = gr.Slider(8, 40, value=DEFAULT_NUM_INFERENCE_STEPS, step=1, label="Inference steps")
+                            story_guidance = gr.Slider(1.0, 7.0, value=DEFAULT_GUIDANCE_SCALE, step=0.1, label="Guidance")
+                            story_negative = gr.Textbox(value=NEGATIVE_PROMPT, label="Avoid", lines=2)
+                        with gr.Row():
+                            preview = gr.Button("Preview storyboard", elem_classes=["soft-btn"])
+                            story_generate = gr.Button("Generate full cartoon", variant="primary", elem_classes=["primary-action"])
+                    with gr.Column(scale=6):
+                        storyboard = gr.Markdown("### Your storyboard will appear here", elem_classes=["storyboard-card"])
+                        story_output = gr.Video(label="Continuous cartoon", autoplay=True, height=390)
+                        story_status = gr.Textbox(label="Story progress", lines=10, interactive=False)
 
-                        t2v_negative = gr.Textbox(
-                            label="🚫 Negative Prompt (optional)",
-                            placeholder="What to avoid: blurry, low quality, distorted...",
-                            lines=2,
-                            value="blurry, low quality, distorted, ugly, watermark",
-                        )
-
-                        # Settings
-                        with gr.Accordion("⚙️ Generation Settings", open=True):
-                            t2v_resolution = gr.Dropdown(
-                                choices=list(RESOLUTION_PRESETS.keys()),
-                                label="📐 Resolution",
-                                value=DEFAULT_RESOLUTION,
-                            )
-                            t2v_duration = gr.Dropdown(
-                                choices=list(DURATION_PRESETS.keys()),
-                                label="⏱️ Duration per Clip",
-                                value=DEFAULT_DURATION,
-                            )
-                            t2v_clips = gr.Slider(
-                                minimum=1,
-                                maximum=3,
-                                step=1,
-                                value=1,
-                                label="🔗 Number of Clips (continuation)",
-                                info="3 clips × 5s = 15s total video with visual continuity",
-                            )
-
-                        with gr.Accordion("🔧 Advanced Settings", open=False):
-                            t2v_steps = gr.Slider(
-                                minimum=4,
-                                maximum=50,
-                                step=1,
-                                value=DEFAULT_NUM_INFERENCE_STEPS,
-                                label="🔄 Inference Steps",
-                                info="8 for distilled model (fast), 20-30 for dev model (quality)",
-                            )
-                            t2v_guidance = gr.Slider(
-                                minimum=1.0,
-                                maximum=10.0,
-                                step=0.1,
-                                value=DEFAULT_GUIDANCE_SCALE,
-                                label="🎯 Guidance Scale (CFG)",
-                                info="Higher = more prompt adherence. 3.0 recommended.",
-                            )
-                            t2v_seed = gr.Number(
-                                label="🎲 Seed (-1 for random)",
-                                value=-1,
-                                precision=0,
-                            )
-
-                        # Generate Button
-                        t2v_generate_btn = gr.Button(
-                            "🚀 Generate Video",
-                            variant="primary",
-                            size="lg",
-                            elem_classes=["generate-btn"],
-                        )
-
-                    # Right: Output
-                    with gr.Column(scale=3):
-                        t2v_output = gr.Video(
-                            label="🎬 Generated Video",
-                            autoplay=True,
-                            height=420,
-                        )
-                        t2v_status = gr.Textbox(
-                            label="📊 Generation Log",
-                            lines=6,
-                            interactive=False,
-                            elem_classes=["status-text"],
-                        )
-
-                # Wire up preset dropdown
-                t2v_preset.change(
-                    fn=apply_preset,
-                    inputs=t2v_preset,
-                    outputs=t2v_prompt,
+                preview.click(preview_story, [story, scene_count, style, character_bible], storyboard)
+                story_generate.click(
+                    generate_story,
+                    [story, character_bible, style, scene_count, reference, story_resolution, story_duration, story_steps, story_guidance, story_seed, story_negative, story_export],
+                    [story_output, story_status],
                 )
 
-                # Wire up generate button
-                t2v_generate_btn.click(
-                    fn=generate_t2v,
-                    inputs=[
-                        t2v_prompt,
-                        t2v_negative,
-                        t2v_resolution,
-                        t2v_duration,
-                        t2v_steps,
-                        t2v_guidance,
-                        t2v_seed,
-                        t2v_clips,
-                    ],
-                    outputs=[t2v_output, t2v_status],
-                )
-
-            # ══════════════════════════════════
-            # TAB 2: IMAGE-TO-VIDEO
-            # ══════════════════════════════════
-            with gr.Tab("🖼️ Image to Video", id="i2v"):
-                with gr.Row(equal_height=False):
-                    # Left: Controls
-                    with gr.Column(scale=2):
-                        i2v_image = gr.Image(
-                            label="📷 Upload Image",
-                            type="pil",
-                            height=220,
-                        )
-
-                        i2v_prompt = gr.Textbox(
-                            label="📝 Motion Prompt",
-                            placeholder="Describe the MOTION you want, not the image content.\n\nExample: 'The camera slowly zooms in, flowers sway gently in the wind'",
-                            lines=3,
-                        )
-
-                        i2v_negative = gr.Textbox(
-                            label="🚫 Negative Prompt",
-                            value="blurry, low quality, distorted, ugly, watermark",
-                            lines=2,
-                        )
-
-                        with gr.Accordion("⚙️ Settings", open=True):
-                            i2v_resolution = gr.Dropdown(
-                                choices=list(RESOLUTION_PRESETS.keys()),
-                                label="📐 Resolution",
-                                value=DEFAULT_RESOLUTION,
-                            )
-                            i2v_duration = gr.Dropdown(
-                                choices=list(DURATION_PRESETS.keys()),
-                                label="⏱️ Duration",
-                                value=DEFAULT_DURATION,
-                            )
-                            i2v_clips = gr.Slider(
-                                minimum=1, maximum=3, step=1, value=1,
-                                label="🔗 Continuation Clips",
-                            )
-
-                        with gr.Accordion("🔧 Advanced", open=False):
-                            i2v_steps = gr.Slider(
-                                minimum=4, maximum=50, step=1,
-                                value=DEFAULT_NUM_INFERENCE_STEPS,
-                                label="Steps",
-                            )
-                            i2v_guidance = gr.Slider(
-                                minimum=1.0, maximum=10.0, step=0.1,
-                                value=DEFAULT_GUIDANCE_SCALE,
-                                label="Guidance Scale",
-                            )
-                            i2v_seed = gr.Number(label="Seed", value=-1, precision=0)
-
-                        i2v_generate_btn = gr.Button(
-                            "🚀 Generate from Image",
-                            variant="primary",
-                            size="lg",
-                            elem_classes=["generate-btn"],
-                        )
-
-                    # Right: Output
-                    with gr.Column(scale=3):
-                        i2v_output = gr.Video(
-                            label="🎬 Generated Video",
-                            autoplay=True,
-                            height=420,
-                        )
-                        i2v_status = gr.Textbox(
-                            label="📊 Generation Log",
-                            lines=6,
-                            interactive=False,
-                            elem_classes=["status-text"],
-                        )
-
-                i2v_generate_btn.click(
-                    fn=generate_i2v,
-                    inputs=[
-                        i2v_prompt,
-                        i2v_image,
-                        i2v_negative,
-                        i2v_resolution,
-                        i2v_duration,
-                        i2v_steps,
-                        i2v_guidance,
-                        i2v_seed,
-                        i2v_clips,
-                    ],
-                    outputs=[i2v_output, i2v_status],
-                )
-
-            # ══════════════════════════════════
-            # TAB 3: ABOUT / HELP
-            # ══════════════════════════════════
-            with gr.Tab("ℹ️ About", id="about"):
+            with gr.Tab("⚙️ RTX 4050 Guide"):
                 gr.Markdown("""
-                ## 🎬 LTX-2.3 Video Studio
+### Recommended settings for your Predator laptop
 
-                **Powered by Lightricks' LTX-2.3** — a 22-billion parameter DiT-based
-                audio-video foundation model.
+**Start here:** 384×224, 121 frames (~4.0 s), 20 steps, one scene at a time. If stable, try 512×288 or 161/193 frames. The 241-frame option is the practical single-clip ceiling exposed by this UI because LTX works best below 257 frames.
 
-                ### 🚀 Features
-                - **Text-to-Video**: Generate videos from text descriptions
-                - **Image-to-Video**: Animate static images with AI-driven motion
-                - **Multi-Clip Continuation**: Chain clips for up to 30s videos with visual continuity
-                - **Prompt Presets**: Quick-start with curated prompt templates
-                - **Memory Optimized**: Runs on GPUs with as low as 6GB VRAM
+**Long cartoons:** do not try to create a one-minute clip in one pass on 6 GB VRAM. Use Cartoon Story Studio. It generates each short scene, extracts the final frame, conditions the next scene, and stitches the clips without loading the whole movie into RAM.
 
-                ### 📐 Technical Details
-                - **Model**: LTX-2.3 22B Distilled (8-step inference)
-                - **Resolution**: Must be divisible by 32
-                - **Frame Count**: Follows 8k+1 pattern (49, 97, 121, 161, 193, 241...)
-                - **FPS**: 24 frames per second
-                - **Continuation**: Last frame of each clip conditions the next clip
+**1080p download:** the 1080p preset is a high-quality delivery resize. It does not invent native 1080p detail; generating native 1080p on this GPU is intentionally disabled to avoid CUDA OOM.
 
-                ### ⚙️ Memory Optimization Stack
-                1. Sequential CPU Offloading
-                2. VAE Slicing & Tiling
-                3. Attention Slicing
-                4. Expandable CUDA memory segments
-
-                ### 🔗 Links
-                - [GitHub: Lightricks/LTX-2](https://github.com/Lightricks/LTX-2)
-                - [HuggingFace: Lightricks/LTX-2.3](https://huggingface.co/Lightricks/LTX-2.3)
-                - [Paper: arXiv 2601.03233](https://arxiv.org/abs/2601.03233)
-
-                ### 💡 Tips
-                - **For I2V**: Describe the *motion* you want, not the image content
-                - **Low VRAM**: Use "Low" resolution and fewer frames
-                - **Better quality**: Increase inference steps (20-30) and use "High" resolution
-                - **Reproducibility**: Set a fixed seed value
+**Offline use:** `python run.py` installs missing Python packages and downloads the Hugging Face model the first time. After the model files are cached, generation can run without an API key.
                 """)
 
+        gr.HTML('<footer class="app-footer">Built for local creation • No MiniMax API • No cloud generation required after model download</footer>')
     return app
 
 
-# ──────────────────────────────────────────────
-# Main Entry Point
-# ──────────────────────────────────────────────
 if __name__ == "__main__":
-    print()
-    print("╔══════════════════════════════════════════════════╗")
-    print("║     🎬 LTX-2.3 Video Studio                     ║")
-    print("║     Starting Gradio server...                    ║")
-    print("╚══════════════════════════════════════════════════╝")
-    print()
-
-    # Print system info
-    from engine.memory_manager import print_system_report
-    print_system_report()
-
-    app = create_app()
-    app.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        share=False,
-        inbrowser=True,
-        show_error=True,
-    )
+    create_app().launch(server_name="127.0.0.1", server_port=7860, inbrowser=True, show_error=True)
