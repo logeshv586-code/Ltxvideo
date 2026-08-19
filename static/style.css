@@ -1,15 +1,22 @@
-:root { --glass: rgba(14,18,30,.74); --line: rgba(255,255,255,.09); }
-.gradio-container { max-width: 1500px !important; background: radial-gradient(circle at 20% -10%, rgba(124,58,237,.18), transparent 38%), radial-gradient(circle at 90% 10%, rgba(6,182,212,.14), transparent 34%), #070a12 !important; }
-.hero-shell { position:relative; overflow:hidden; padding:44px; margin:8px 0 22px; border:1px solid var(--line); border-radius:28px; background:linear-gradient(120deg, rgba(22,26,44,.96), rgba(14,14,28,.82)); box-shadow:0 28px 90px rgba(0,0,0,.36); }
-.hero-shell:after { content:""; position:absolute; width:320px; height:320px; right:-70px; top:-120px; border-radius:50%; background:linear-gradient(135deg,#8b5cf6,#06b6d4); filter:blur(70px); opacity:.24; }
-.hero-kicker { font-size:12px; letter-spacing:.2em; color:#a5b4fc; font-weight:800; }
-.hero-shell h1 { margin:10px 0 8px; font-size:48px; letter-spacing:-.045em; color:#f8fafc; }
+:root { --glass: rgba(14,18,30,.76); --line: rgba(255,255,255,.09); --muted:#94a3b8; }
+.gradio-container { max-width: 1540px !important; background: radial-gradient(circle at 15% -10%, rgba(124,58,237,.19), transparent 38%), radial-gradient(circle at 92% 12%, rgba(6,182,212,.15), transparent 35%), #070a12 !important; }
+.hero-shell { position:relative; overflow:hidden; padding:46px; margin:8px 0 18px; border:1px solid var(--line); border-radius:30px; background:linear-gradient(120deg, rgba(22,26,44,.97), rgba(14,14,28,.84)); box-shadow:0 28px 90px rgba(0,0,0,.36); }
+.hero-shell:after { content:""; position:absolute; width:360px; height:360px; right:-70px; top:-140px; border-radius:50%; background:linear-gradient(135deg,#8b5cf6,#06b6d4); filter:blur(75px); opacity:.25; }
+.hero-kicker { position:relative; z-index:1; font-size:12px; letter-spacing:.2em; color:#a5b4fc; font-weight:800; }
+.hero-shell h1 { position:relative; z-index:1; margin:10px 0 8px; font-size:50px; letter-spacing:-.05em; color:#f8fafc; }
 .hero-shell h1 span { background:linear-gradient(90deg,#c4b5fd,#67e8f9); -webkit-background-clip:text; color:transparent; }
-.hero-shell p { max-width:850px; font-size:17px; line-height:1.65; color:#cbd5e1; }
-.hero-pills { display:flex; flex-wrap:wrap; gap:10px; margin-top:20px; }
+.hero-shell p { position:relative; z-index:1; max-width:980px; font-size:17px; line-height:1.65; color:#cbd5e1; }
+.hero-pills { position:relative; z-index:1; display:flex; flex-wrap:wrap; gap:10px; margin-top:20px; }
 .hero-pills b { border:1px solid rgba(165,180,252,.18); padding:8px 12px; border-radius:999px; font-size:12px; color:#e2e8f0; background:rgba(255,255,255,.035); }
+.mode-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin:14px 0 22px; }
+.mode-grid article { min-height:98px; padding:18px; border:1px solid var(--line); border-radius:18px; background:linear-gradient(145deg,rgba(255,255,255,.055),rgba(255,255,255,.02)); box-shadow:0 10px 30px rgba(0,0,0,.16); }
+.mode-grid article span { display:block; font-size:24px; margin-bottom:8px; }
+.mode-grid article b { display:block; color:#f8fafc; font-size:15px; }
+.mode-grid article small { display:block; margin-top:4px; color:#94a3b8; line-height:1.35; }
 .status-card, .storyboard-card { padding:18px 22px; border:1px solid var(--line); border-radius:18px; background:var(--glass); backdrop-filter:blur(16px); }
+.director-prompt textarea { font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace !important; line-height:1.55 !important; }
 .primary-action { min-height:52px !important; font-weight:800 !important; border-radius:14px !important; box-shadow:0 12px 30px rgba(124,58,237,.24) !important; }
 .soft-btn { border-radius:12px !important; }
-.app-footer { color:#64748b; text-align:center; padding:26px 10px 34px; font-size:12px; letter-spacing:.03em; }
-@media (max-width: 720px) { .hero-shell { padding:28px 22px; } .hero-shell h1 { font-size:36px; } }
+.app-footer { color:#64748b; text-align:center; padding:28px 10px 36px; font-size:12px; letter-spacing:.03em; }
+@media (max-width: 1050px) { .mode-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width: 720px) { .hero-shell { padding:28px 22px; } .hero-shell h1 { font-size:36px; } .mode-grid { grid-template-columns:1fr; } }
