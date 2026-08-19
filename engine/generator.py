@@ -93,6 +93,7 @@ class VideoGenerator:
             device_map="auto",
             max_memory=max_memory,
             offload_folder=offload_folder,
+            low_cpu_mem_usage=True,
         )
 
         self._report(progress_callback, "Loading 2B video transformer in 8-bit…", 0.24)
@@ -104,6 +105,7 @@ class VideoGenerator:
             device_map="auto",
             max_memory=max_memory,
             offload_folder=offload_folder,
+            low_cpu_mem_usage=True,
         )
 
         pipeline_cls = LTXImageToVideoPipeline if mode == "i2v" else LTXPipeline
@@ -116,6 +118,7 @@ class VideoGenerator:
             device_map="balanced",
             max_memory=max_memory,
             offload_folder=offload_folder,
+            low_cpu_mem_usage=True,
         )
 
         if ENABLE_VAE_TILING and hasattr(self.pipe.vae, "enable_tiling"):
