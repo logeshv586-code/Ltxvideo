@@ -9,7 +9,8 @@ MODELS_DIR = PROJECT_ROOT / "models"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 STATIC_DIR = PROJECT_ROOT / "static"
 OFFLOAD_DIR = MODELS_DIR / "offload"
-for directory in (MODELS_DIR, OUTPUTS_DIR, STATIC_DIR, OFFLOAD_DIR):
+HF_CACHE_DIR = MODELS_DIR / "hf-cache"
+for directory in (MODELS_DIR, OUTPUTS_DIR, STATIC_DIR, OFFLOAD_DIR, HF_CACHE_DIR):
     directory.mkdir(parents=True, exist_ok=True)
 
 HF_REPO_ID = "Lightricks/LTX-Video"
@@ -79,3 +80,4 @@ EXPORT_PRESETS = {
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+os.environ.setdefault("HF_HOME", str(HF_CACHE_DIR))
