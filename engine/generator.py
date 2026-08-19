@@ -21,6 +21,7 @@ from config import (
     ENABLE_8BIT,
     ENABLE_VAE_TILING,
     GPU_MEMORY_BUDGET,
+    HF_CACHE_DIR,
     HF_REPO_ID,
     MAX_NATIVE_FRAMES,
     MODELS_DIR,
@@ -83,11 +84,13 @@ class VideoGenerator:
 
         max_memory = {0: GPU_MEMORY_BUDGET, "cpu": CPU_MEMORY_BUDGET}
         offload_folder = str(MODELS_DIR / "offload")
+        cache_dir = str(HF_CACHE_DIR)
 
         self._report(progress_callback, "Loading T5 text encoder in 8-bit…", 0.12)
         text_encoder = T5EncoderModel.from_pretrained(
             HF_REPO_ID,
             subfolder="text_encoder",
+            cache_dir=cache_dir,
             quantization_config=BitsAndBytesConfig(load_in_8bit=True),
             torch_dtype=torch.float16,
             device_map="auto",
@@ -100,6 +103,7 @@ class VideoGenerator:
         transformer = LTXVideoTransformer3DModel.from_pretrained(
             HF_REPO_ID,
             subfolder="transformer",
+            cache_dir=cache_dir,
             quantization_config=DiffusersBitsAndBytesConfig(load_in_8bit=True),
             torch_dtype=torch.float16,
             device_map="auto",
@@ -112,6 +116,7 @@ class VideoGenerator:
         self._report(progress_callback, f"Building {mode.upper()} pipeline…", 0.38)
         self.pipe = pipeline_cls.from_pretrained(
             HF_REPO_ID,
+            cache_dir=cache_dir,
             text_encoder=text_encoder,
             transformer=transformer,
             torch_dtype=torch.float16,
@@ -148,59 +153,21 @@ class VideoGenerator:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         return OUTPUTS_DIR / f"{prefix}_{stamp}.mp4"
 
-    def generate_text_to_video(
-        self,
-        prompt: str,
-        negative_prompt: str,
-        width: int,
-        height: int,
-        num_frames: int,
-        num_inference_steps: int,
-        guidance_scale: float,
-        seed: int = -1,
-        progress_callback: Progress = None,
-    ) -> Path:
+    def generate_text_to_video(self, prompt: str, negative_prompt: str, width: int, height: int, num_frames: int, num_inference_steps: int, guidance_scale: float, seed: int = -1, progress_callback: Progress = None) -> Path:
         from diffusers.utils import export_to_video
-
         self._validate_shape(width, height, num_frames)
         self._load_pipeline("t2v", progress_callback)
         actual_seed = self._seed(seed)
         self._report(progress_callback, f"Generating {num_frames} frames (seed {actual_seed})…", 0.5)
-
         generator = torch.Generator(device="cuda").manual_seed(actual_seed)
-        result = self.pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            width=width,
-            height=height,
-            num_frames=num_frames,
-            num_inference_steps=int(num_inference_steps),
-            guidance_scale=float(guidance_scale),
-            decode_timestep=0.05,
-            decode_noise_scale=0.025,
-            generator=generator,
-        ).frames[0]
-
+        result = self.pipe(prompt=prompt, negative_prompt=negative_prompt, width=width, height=height, num_frames=num_frames, num_inference_steps=int(num_inference_steps), guidance_scale=float(guidance_scale), decode_timestep=0.05, decode_noise_scale=0.025, generator=generator).frames[0]
         output = self._output_path("ltx_t2v")
         export_to_video(result, str(output), fps=DEFAULT_FPS)
         self._report(progress_callback, f"Saved {output.name}", 1.0)
         return output
 
-    def generate_image_to_video(
-        self,
-        prompt: str,
-        image: Image.Image,
-        negative_prompt: str,
-        width: int,
-        height: int,
-        num_frames: int,
-        num_inference_steps: int,
-        guidance_scale: float,
-        seed: int = -1,
-        progress_callback: Progress = None,
-    ) -> Path:
+    def generate_image_to_video(self, prompt: str, image: Image.Image, negative_prompt: str, width: int, height: int, num_frames: int, num_inference_steps: int, guidance_scale: float, seed: int = -1, progress_callback: Progress = None) -> Path:
         from diffusers.utils import export_to_video
-
         self._validate_shape(width, height, num_frames)
         if image is None:
             raise ValueError("Reference image is required for image-to-video.")
@@ -208,23 +175,8 @@ class VideoGenerator:
         actual_seed = self._seed(seed)
         image = image.convert("RGB").resize((width, height), Image.Resampling.LANCZOS)
         self._report(progress_callback, f"Animating reference image (seed {actual_seed})…", 0.5)
-
         generator = torch.Generator(device="cuda").manual_seed(actual_seed)
-        result = self.pipe(
-            image=image,
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            width=width,
-            height=height,
-            num_frames=num_frames,
-            frame_rate=DEFAULT_FPS,
-            num_inference_steps=int(num_inference_steps),
-            guidance_scale=float(guidance_scale),
-            decode_timestep=0.05,
-            decode_noise_scale=0.025,
-            generator=generator,
-        ).frames[0]
-
+        result = self.pipe(image=image, prompt=prompt, negative_prompt=negative_prompt, width=width, height=height, num_frames=num_frames, frame_rate=DEFAULT_FPS, num_inference_steps=int(num_inference_steps), guidance_scale=float(guidance_scale), decode_timestep=0.05, decode_noise_scale=0.025, generator=generator).frames[0]
         output = self._output_path("ltx_i2v")
         export_to_video(result, str(output), fps=DEFAULT_FPS)
         self._report(progress_callback, f"Saved {output.name}", 1.0)
