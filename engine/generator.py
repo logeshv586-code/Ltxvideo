@@ -1,8 +1,8 @@
 """Memory-aware LTX-Video generator for RTX 4050 laptops.
 
-The pipeline is loaded with 8-bit transformer + T5 weights and a strict
-GPU/CPU memory budget. The model is downloaded automatically by Hugging Face
-on first use and then reused from the local cache for offline generation.
+Every generation passes through the Video Skill Engine before inference. The
+engine preserves the user's literal intent, applies only relevant directing
+skills, hardens negative constraints, and performs a post-render technical QC.
 """
 from __future__ import annotations
 
@@ -27,17 +27,21 @@ from config import (
     MODELS_DIR,
     OUTPUTS_DIR,
 )
+from engine.skill_engine import SKILL_ENGINE, SkillPlan, VideoRequest
+from engine.video_qc import VideoQCReport, inspect_video
 
 Progress = Callable[[str, float], None] | None
 
 
 class VideoGenerator:
-    """LTX text/image-to-video with aggressive memory control."""
+    """LTX text/image-to-video with skill orchestration and memory control."""
 
     def __init__(self) -> None:
         self.pipe = None
         self.mode: str | None = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.last_skill_plan: SkillPlan | None = None
+        self.last_qc: VideoQCReport | None = None
 
     def _report(self, callback: Progress, message: str, progress: float) -> None:
         print(f"[{progress * 100:5.1f}%] {message}")
@@ -55,6 +59,32 @@ class VideoGenerator:
                 f"RTX 4050 mode caps one native clip at {MAX_NATIVE_FRAMES} frames. "
                 "Use Cartoon Story mode for longer videos."
             )
+
+    def prepare_skill_plan(
+        self,
+        prompt: str,
+        negative_prompt: str,
+        width: int,
+        height: int,
+        num_frames: int,
+        has_reference: bool,
+        skill_mode: str = "auto",
+        character_lock: str = "",
+    ) -> SkillPlan:
+        """Build the mandatory skill plan used by every generation path."""
+        plan = SKILL_ENGINE.plan(VideoRequest(
+            raw_prompt=prompt,
+            mode=skill_mode,
+            duration_seconds=num_frames / DEFAULT_FPS,
+            width=width,
+            height=height,
+            num_frames=num_frames,
+            has_reference=has_reference,
+            negative_prompt=negative_prompt,
+            character_lock=character_lock,
+        ))
+        self.last_skill_plan = plan
+        return plan
 
     def _load_pipeline(self, mode: str, progress_callback: Progress = None) -> None:
         if self.pipe is not None and self.mode == mode:
@@ -142,7 +172,10 @@ class VideoGenerator:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:
+                pass
 
     @staticmethod
     def _seed(seed: int) -> int:
@@ -153,31 +186,136 @@ class VideoGenerator:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         return OUTPUTS_DIR / f"{prefix}_{stamp}.mp4"
 
-    def generate_text_to_video(self, prompt: str, negative_prompt: str, width: int, height: int, num_frames: int, num_inference_steps: int, guidance_scale: float, seed: int = -1, progress_callback: Progress = None) -> Path:
+    def _run_pipe_with_cuda_retry(self, mode: str, kwargs: dict, progress_callback: Progress):
+        self._load_pipeline(mode, progress_callback)
+        try:
+            return self.pipe(**kwargs)
+        except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
+            message = str(exc).lower()
+            if not isinstance(exc, torch.cuda.OutOfMemoryError) and "cuda" not in message and "out of memory" not in message:
+                raise
+            self._report(progress_callback, "CUDA memory failure detected; clearing the model and retrying once…", 0.46)
+            self.unload_model()
+            self._load_pipeline(mode, progress_callback)
+            return self.pipe(**kwargs)
+
+    def _record_qc(self, path: Path, width: int, height: int, num_frames: int) -> VideoQCReport:
+        report = inspect_video(
+            path,
+            expected_width=width,
+            expected_height=height,
+            expected_duration=num_frames / DEFAULT_FPS,
+        )
+        self.last_qc = report
+        return report
+
+    def generation_report(self) -> str:
+        """Human-readable skill + technical QC trace for the UI/logs."""
+        parts: list[str] = []
+        if self.last_skill_plan:
+            parts.append(self.last_skill_plan.trace_text())
+        if self.last_qc:
+            parts.append(self.last_qc.summary())
+        return "\n".join(parts)
+
+    def generate_text_to_video(
+        self,
+        prompt: str,
+        negative_prompt: str,
+        width: int,
+        height: int,
+        num_frames: int,
+        num_inference_steps: int,
+        guidance_scale: float,
+        seed: int = -1,
+        progress_callback: Progress = None,
+        skill_mode: str = "auto",
+        character_lock: str = "",
+    ) -> Path:
         from diffusers.utils import export_to_video
+
         self._validate_shape(width, height, num_frames)
-        self._load_pipeline("t2v", progress_callback)
+        plan = self.prepare_skill_plan(
+            prompt, negative_prompt, width, height, num_frames,
+            has_reference=False, skill_mode=skill_mode, character_lock=character_lock,
+        )
+        self._report(
+            progress_callback,
+            f"Video Skill Engine: {len(plan.applied_skills)} skills active · quality gate {plan.quality_score}/100",
+            0.02,
+        )
         actual_seed = self._seed(seed)
         self._report(progress_callback, f"Generating {num_frames} frames (seed {actual_seed})…", 0.5)
         generator = torch.Generator(device="cuda").manual_seed(actual_seed)
-        result = self.pipe(prompt=prompt, negative_prompt=negative_prompt, width=width, height=height, num_frames=num_frames, num_inference_steps=int(num_inference_steps), guidance_scale=float(guidance_scale), decode_timestep=0.05, decode_noise_scale=0.025, generator=generator).frames[0]
+        kwargs = dict(
+            prompt=plan.prompt,
+            negative_prompt=plan.negative_prompt,
+            width=width,
+            height=height,
+            num_frames=num_frames,
+            num_inference_steps=int(num_inference_steps),
+            guidance_scale=float(guidance_scale),
+            decode_timestep=0.05,
+            decode_noise_scale=0.025,
+            generator=generator,
+        )
+        result = self._run_pipe_with_cuda_retry("t2v", kwargs, progress_callback).frames[0]
         output = self._output_path("ltx_t2v")
         export_to_video(result, str(output), fps=DEFAULT_FPS)
-        self._report(progress_callback, f"Saved {output.name}", 1.0)
+        qc = self._record_qc(output, width, height, num_frames)
+        self._report(progress_callback, f"Saved {output.name} · technical QC {'PASS' if not qc.fatal else 'FAIL'}", 1.0)
         return output
 
-    def generate_image_to_video(self, prompt: str, image: Image.Image, negative_prompt: str, width: int, height: int, num_frames: int, num_inference_steps: int, guidance_scale: float, seed: int = -1, progress_callback: Progress = None) -> Path:
+    def generate_image_to_video(
+        self,
+        prompt: str,
+        image: Image.Image,
+        negative_prompt: str,
+        width: int,
+        height: int,
+        num_frames: int,
+        num_inference_steps: int,
+        guidance_scale: float,
+        seed: int = -1,
+        progress_callback: Progress = None,
+        skill_mode: str = "auto",
+        character_lock: str = "",
+    ) -> Path:
         from diffusers.utils import export_to_video
+
         self._validate_shape(width, height, num_frames)
         if image is None:
             raise ValueError("Reference image is required for image-to-video.")
-        self._load_pipeline("i2v", progress_callback)
+        plan = self.prepare_skill_plan(
+            prompt, negative_prompt, width, height, num_frames,
+            has_reference=True, skill_mode=skill_mode, character_lock=character_lock,
+        )
+        self._report(
+            progress_callback,
+            f"Video Skill Engine: {len(plan.applied_skills)} skills active · quality gate {plan.quality_score}/100",
+            0.02,
+        )
         actual_seed = self._seed(seed)
         image = image.convert("RGB").resize((width, height), Image.Resampling.LANCZOS)
         self._report(progress_callback, f"Animating reference image (seed {actual_seed})…", 0.5)
         generator = torch.Generator(device="cuda").manual_seed(actual_seed)
-        result = self.pipe(image=image, prompt=prompt, negative_prompt=negative_prompt, width=width, height=height, num_frames=num_frames, frame_rate=DEFAULT_FPS, num_inference_steps=int(num_inference_steps), guidance_scale=float(guidance_scale), decode_timestep=0.05, decode_noise_scale=0.025, generator=generator).frames[0]
+        kwargs = dict(
+            image=image,
+            prompt=plan.prompt,
+            negative_prompt=plan.negative_prompt,
+            width=width,
+            height=height,
+            num_frames=num_frames,
+            frame_rate=DEFAULT_FPS,
+            num_inference_steps=int(num_inference_steps),
+            guidance_scale=float(guidance_scale),
+            decode_timestep=0.05,
+            decode_noise_scale=0.025,
+            generator=generator,
+        )
+        result = self._run_pipe_with_cuda_retry("i2v", kwargs, progress_callback).frames[0]
         output = self._output_path("ltx_i2v")
         export_to_video(result, str(output), fps=DEFAULT_FPS)
-        self._report(progress_callback, f"Saved {output.name}", 1.0)
+        qc = self._record_qc(output, width, height, num_frames)
+        self._report(progress_callback, f"Saved {output.name} · technical QC {'PASS' if not qc.fatal else 'FAIL'}", 1.0)
         return output
