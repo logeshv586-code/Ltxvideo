@@ -1,0 +1,12 @@
+Ltxvideo
+Copyright 2026 Ltxvideo contributors
+
+This repository's application code is licensed under the Apache License 2.0.
+
+LTX model weights, upstream model/runtime code, Hugging Face-hosted artifacts, and other third-party dependencies are not relicensed by this repository. They remain subject to their respective upstream licenses and terms. In particular, users should review the current Lightricks LTX model license before downloading, redistributing, or using model assets commercially.
+
+Upstream references:
+- https://github.com/Lightricks/LTX-Video
+- https://github.com/Lightricks/LTX-2
+- https://huggingface.co/Lightricks/LTX-Video
+- https://huggingface.co/docs/diffusers/api/pipelines/ltx_video
