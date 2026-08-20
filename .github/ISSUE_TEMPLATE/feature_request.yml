@@ -1,0 +1,61 @@
+name: Feature request
+description: Suggest an improvement that fits the local, low-memory LTX video workflow.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Good feature requests explain the user problem first and keep the RTX 4050 / low-memory target in mind.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What is difficult or missing today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the smallest useful version.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - General Studio
+        - Image-to-Video
+        - Comics Studio
+        - Real-World Studio
+        - Action Studio
+        - Cartoon Story Studio
+        - Prompt / skill engine
+        - Performance / memory
+        - Export / video processing
+        - UI / UX
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware impact
+      description: If relevant, explain expected VRAM/RAM/runtime impact and whether the feature still supports the RTX 4050 target.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and discussions first.
+          required: true
+        - label: I understand 720p/1080p delivery export is not the same as native 720p/1080p diffusion.
+          required: true

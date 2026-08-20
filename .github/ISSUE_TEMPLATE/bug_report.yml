@@ -1,0 +1,73 @@
+name: Bug report
+description: Report a reproducible problem with setup, generation, export, or the UI.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve LTX Video Director Studio. Please remove private data and do not upload model weights.
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, GPU, VRAM, RAM, and NVIDIA driver if relevant.
+      placeholder: Windows 11, Python 3.11, RTX 4050 6 GB, 16 GB RAM
+    validations:
+      required: true
+  - type: dropdown
+    id: studio
+    attributes:
+      label: Studio / workflow
+      options:
+        - General Studio
+        - Image-to-Video
+        - Comics Studio
+        - Real-World Studio
+        - Action Studio
+        - Cartoon Story Studio
+        - Startup / model download
+        - Export / FFmpeg
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Include the smallest sequence that reproduces the problem.
+      placeholder: |
+        1. Run python run.py
+        2. Select 384x224 / 49 frames
+        3. Enter prompt ...
+        4. Click Generate
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior / error
+      description: Paste the relevant traceback or error text. Do not paste secrets or access tokens.
+    validations:
+      required: true
+  - type: textarea
+    id: settings
+    attributes:
+      label: Generation settings
+      description: Resolution, frames, seed, steps, guidance, reference-image use, and any continuity settings.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues first.
+          required: true
+        - label: I am not reporting an issue caused by unsupported native 1080p diffusion on the RTX 4050 profile.
+          required: true

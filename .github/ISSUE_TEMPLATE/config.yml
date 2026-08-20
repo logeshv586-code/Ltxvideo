@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/logeshv586-code/Ltxvideo/discussions
+    about: Use Discussions for setup questions, prompt ideas, showcase posts, and open-ended product feedback.
+  - name: RTX 4050 demo tracking
+    url: https://github.com/logeshv586-code/Ltxvideo/issues/7
+    about: Follow or contribute to the first verified local RTX 4050 demo reel.
