@@ -61,6 +61,81 @@ http://127.0.0.1:7860
 
 The first model setup requires internet access. Later launches reuse the local cache.
 
+## Windows RTX 4050 first-run checklist
+
+For the project's RTX 4050 / 16 GB RAM target, use this sequence for a first local launch.
+
+### 1. Check the NVIDIA driver
+
+Open PowerShell and run:
+
+~~~powershell
+nvidia-smi
+~~~
+
+Confirm that Windows can see your NVIDIA GPU before starting the application.
+
+### 2. Create and activate the Python environment
+
+Use Python 3.10+:
+
+~~~powershell
+python --version
+python -m venv venv
+venv\Scripts\activate
+python -m pip install -r requirements.txt
+~~~
+
+### 3. Launch Ltxvideo
+
+From the repository root:
+
+~~~powershell
+python run.py
+~~~
+
+The application should open at:
+
+~~~text
+http://127.0.0.1:7860
+~~~
+
+`run.py` checks the required runtime packages and prepares the local model cache when needed. The first model setup requires internet access; later launches reuse the local cache.
+
+### 4. Start with the safest generation preset
+
+For the first GPU smoke test, use:
+
+~~~text
+Resolution: 384×224
+Frames:     49
+Duration:   ~1.6 seconds at 30 FPS
+~~~
+
+If that succeeds, move to the recommended everyday starting preset:
+
+~~~text
+Resolution: 384×224
+Frames:     121
+Duration:   ~4 seconds at 30 FPS
+~~~
+
+### 5. If CUDA runs out of memory
+
+First close GPU-heavy applications and reduce the generation size:
+
+- Use `384×224`
+- Try 49, 97, or 121 frames
+- Restart the application after an out-of-memory failure
+
+For additional memory and Windows troubleshooting, see the [Troubleshooting](#troubleshooting) section below.
+
+### 6. Model cache
+
+Model files are downloaded during the first setup and reused locally on later launches. Keep the local model cache available if you want to run without downloading the models again.
+
+> **Note:** This checklist documents the intended first-run workflow for the project's RTX 4050 target. It does not claim that a specific generation was validated on a particular RTX 4050 machine.
+
 ## Safest first generation
 
 For a first GPU smoke test on the target hardware, start small:
