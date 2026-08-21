@@ -27,17 +27,25 @@ def ensure_dependencies() -> None:
         subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
 
 
-def main() -> None:
+def main() -> int:
+    if "--check" in sys.argv[1:]:
+        from diagnostics import main as diagnostics_main
+
+        return diagnostics_main()
+
     ensure_dependencies()
     marker = ROOT / "models" / ".ltx_ready"
     if not marker.exists():
         print("LTX model cache not found. Preparing offline model files…")
         from download_models import download
+
         download()
     from app import create_app
+
     app = create_app()
     app.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True, show_error=True)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
