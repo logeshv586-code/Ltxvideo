@@ -9,6 +9,8 @@ from dataclasses import dataclass
 import psutil
 import torch
 
+from engine.hardware_profiles import select_hardware_profile
+
 
 @dataclass
 class GPUInfo:
@@ -53,21 +55,28 @@ def get_hardware_recommendation() -> str:
     info = get_system_info()
     if not info.gpu:
         return "❌ CUDA GPU not detected."
-    tags = []
-    if "4050" in info.gpu.name.lower() or info.gpu.vram_total_gb <= 6.5:
-        tags.append("RTX 4050 low-VRAM profile active")
-    else:
-        tags.append(f"{info.gpu.vram_total_gb:.1f} GB VRAM detected")
+
+    profile = select_hardware_profile(
+        info.gpu.name,
+        info.gpu.vram_total_gb,
+        info.ram_total_gb,
+    )
+    tags = [profile.label]
     if info.ram_total_gb < 20:
-        tags.append("16 GB RAM-safe budgets enabled")
-    tags.append("8-bit LTX + CPU/GPU balancing")
+        tags.append("system-RAM-aware CPU offload")
+    tags.append(f"GPU budget {profile.gpu_memory_budget}")
+    tags.append("8-bit LTX + VAE tiling/slicing")
     return " · ".join(tags)
 
 
 def get_status_markdown() -> str:
     info = get_system_info()
     gpu = f"**{info.gpu.name}** · {info.gpu.vram_total_gb:.1f} GB VRAM · CUDA {info.gpu.cuda_version}" if info.gpu else "**No CUDA GPU detected**"
-    return f"### 🖥️ Hardware\n{gpu}\n\n**RAM:** {info.ram_total_gb:.1f} GB total / {info.ram_available_gb:.1f} GB available  \n**CPU threads:** {info.cpu_threads}  \n**Profile:** {get_hardware_recommendation()}"
+    safe = ""
+    if info.gpu:
+        profile = select_hardware_profile(info.gpu.name, info.gpu.vram_total_gb, info.ram_total_gb)
+        safe = f"  \n**Safe first clip:** {profile.safe_width}×{profile.safe_height} · {profile.safe_frames} frames"
+    return f"### 🖥️ Hardware\n{gpu}\n\n**RAM:** {info.ram_total_gb:.1f} GB total / {info.ram_available_gb:.1f} GB available  \n**CPU threads:** {info.cpu_threads}  \n**Profile:** {get_hardware_recommendation()}{safe}"
 
 
 def print_system_report() -> None:
