@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +18,7 @@ REQUIRED = {
     "bitsandbytes": "bitsandbytes>=0.45.0",
     "cv2": "opencv-python-headless>=4.8.0",
     "imageio_ffmpeg": "imageio-ffmpeg>=0.5.1",
+    "psutil": "psutil>=5.9.0",
 }
 
 
@@ -27,6 +29,30 @@ def ensure_dependencies() -> None:
         subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
 
 
+def configure_hardware_profile():
+    """Apply GPU-specific budgets before app.py imports the generator constants."""
+    import config
+    from engine.hardware_profiles import get_active_hardware_profile
+
+    profile = get_active_hardware_profile()
+    if profile.key == "no-cuda":
+        print("Hardware profile: CUDA GPU not detected")
+        return profile
+
+    config.GPU_MEMORY_BUDGET = os.getenv("LTX_GPU_MEMORY_BUDGET", profile.gpu_memory_budget)
+    config.CPU_MEMORY_BUDGET = os.getenv("LTX_CPU_MEMORY_BUDGET", profile.cpu_memory_budget)
+    config.MAX_NATIVE_FRAMES = min(config.MAX_NATIVE_FRAMES, profile.max_native_frames)
+
+    print(f"Hardware profile: {profile.label}")
+    print(
+        "Runtime memory: "
+        f"GPU {config.GPU_MEMORY_BUDGET} / CPU {config.CPU_MEMORY_BUDGET} / "
+        f"native clip cap {config.MAX_NATIVE_FRAMES} frames"
+    )
+    print(f"Safe first clip: {profile.safe_width}x{profile.safe_height} · {profile.safe_frames} frames")
+    return profile
+
+
 def main() -> int:
     if "--check" in sys.argv[1:]:
         from diagnostics import main as diagnostics_main
@@ -34,6 +60,8 @@ def main() -> int:
         return diagnostics_main()
 
     ensure_dependencies()
+    configure_hardware_profile()
+
     marker = ROOT / "models" / ".ltx_ready"
     if not marker.exists():
         print("LTX model cache not found. Preparing offline model files…")
