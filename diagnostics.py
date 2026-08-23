@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from engine.hardware_profiles import select_hardware_profile
+
 ROOT = Path(__file__).parent.resolve()
 MODEL_MARKER = ROOT / "models" / ".ltx_ready"
 MIN_PYTHON = (3, 10)
@@ -53,8 +55,25 @@ def collect_diagnostics(*, loader: Loader = _load_module, marker: Path = MODEL_M
             cuda_available = bool(cuda and cuda.is_available())
             if cuda_available:
                 gpu_name = cuda.get_device_name(0)
+                props = cuda.get_device_properties(0)
+                vram_total_gb = props.total_memory / 1024**3
                 cuda_version = getattr(getattr(torch, "version", None), "cuda", None) or "unknown"
-                results.append(CheckResult("PASS", "CUDA", f"{gpu_name} · CUDA {cuda_version}"))
+                results.append(CheckResult("PASS", "CUDA", f"{gpu_name} · {vram_total_gb:.1f} GB VRAM · CUDA {cuda_version}"))
+                profile = select_hardware_profile(gpu_name, vram_total_gb)
+                results.append(
+                    CheckResult(
+                        "PASS",
+                        "GPU profile",
+                        f"{profile.label} · GPU {profile.gpu_memory_budget} / CPU {profile.cpu_memory_budget}",
+                    )
+                )
+                results.append(
+                    CheckResult(
+                        "INFO",
+                        "Safe preset",
+                        f"{profile.safe_width}x{profile.safe_height} · {profile.safe_frames} frames · native cap {profile.max_native_frames}",
+                    )
+                )
             else:
                 results.append(CheckResult("WARN", "CUDA", "no CUDA GPU detected; generation will not run on the target GPU path"))
         except Exception as exc:  # keep diagnostics usable even with a broken torch install
@@ -100,7 +119,11 @@ def print_report(results: list[CheckResult]) -> None:
     for result in results:
         print(f"[{result.level:<4}] {result.name}: {result.detail}")
     print()
-    print("Safe first generation: 384x224 · 49 frames (~1.6 s at 30 FPS)")
+    safe = next((result.detail for result in results if result.name == "Safe preset"), None)
+    if safe:
+        print(f"Recommended first generation: {safe}")
+    else:
+        print("Safe first generation: 384x224 · 49 frames (~1.6 s at 30 FPS)")
 
 
 def main() -> int:
