@@ -13,10 +13,13 @@
 .mode-grid article span { display:block; font-size:24px; margin-bottom:8px; }
 .mode-grid article b { display:block; color:#f8fafc; font-size:15px; }
 .mode-grid article small { display:block; margin-top:4px; color:#94a3b8; line-height:1.35; }
-.status-card, .storyboard-card { padding:18px 22px; border:1px solid var(--line); border-radius:18px; background:var(--glass); backdrop-filter:blur(16px); }
+.status-card, .storyboard-card, .sequence-card { padding:18px 22px; border:1px solid var(--line); border-radius:18px; background:var(--glass); backdrop-filter:blur(16px); }
+.sequence-step-card { border:1px solid rgba(139,92,246,.25); border-radius:16px; padding:16px; margin-bottom:14px; background:rgba(255,255,255,.02); }
+.step-badge { display:inline-block; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; background:linear-gradient(90deg,#8b5cf6,#06b6d4); color:#ffffff; margin-bottom:8px; }
 .director-prompt textarea { font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace !important; line-height:1.55 !important; }
 .primary-action { min-height:52px !important; font-weight:800 !important; border-radius:14px !important; box-shadow:0 12px 30px rgba(124,58,237,.24) !important; }
 .soft-btn { border-radius:12px !important; }
 .app-footer { color:#64748b; text-align:center; padding:28px 10px 36px; font-size:12px; letter-spacing:.03em; }
 @media (max-width: 1050px) { .mode-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media (max-width: 720px) { .hero-shell { padding:28px 22px; } .hero-shell h1 { font-size:36px; } .mode-grid { grid-template-columns:1fr; } }
+

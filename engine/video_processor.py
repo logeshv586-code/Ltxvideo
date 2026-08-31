@@ -79,14 +79,30 @@ def concatenate_videos_streaming(
     return output_path
 
 
-def export_delivery(video_path: str | Path, output_path: str | Path, width: int, height: int) -> Path:
-    """Create a delivery-size MP4. This is a high-quality resize, not AI detail synthesis."""
+def export_delivery(
+    video_path: str | Path,
+    output_path: str | Path,
+    width: int,
+    height: int,
+    enhance_quality: bool = True,
+) -> Path:
+    """Create a high-quality delivery MP4 with Lanczos scaling and optional crisp edge filtering."""
     video_path, output_path = Path(video_path), Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    scale_filter = f"scale={width}:{height}:flags=lanczos:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+    if enhance_quality:
+        vf_pipeline = f"{scale_filter},unsharp=5:5:0.6:5:5:0.0"
+    else:
+        vf_pipeline = scale_filter
+
     cmd = [
         _ffmpeg_exe(), "-y", "-i", str(video_path),
-        "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
-        "-c:v", "libx264", "-preset", "slow", "-crf", "17", "-pix_fmt", "yuv420p",
+        "-vf", vf_pipeline,
+        "-c:v", "libx264", "-preset", "slow", "-crf", "16",
+        "-pix_fmt", "yuv420p",
         "-movflags", "+faststart", str(output_path),
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     return output_path
+

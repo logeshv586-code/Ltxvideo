@@ -36,11 +36,12 @@ from config import (
 from engine.generator import VideoGenerator
 from engine.memory_manager import get_status_markdown
 from engine.prompt_builders import build_directed_prompt
-from engine.storyboard import CartoonStoryGenerator, storyboard_markdown
+from engine.storyboard import CartoonStoryGenerator, ContinuousSequenceGenerator, storyboard_markdown
 from engine.video_processor import export_delivery
 
 GENERATOR = VideoGenerator()
 STORY_GENERATOR = CartoonStoryGenerator(GENERATOR)
+SEQUENCE_GENERATOR = ContinuousSequenceGenerator(GENERATOR)
 CSS_PATH = Path(__file__).parent / "static" / "style.css"
 CUSTOM_CSS = CSS_PATH.read_text(encoding="utf-8") if CSS_PATH.exists() else ""
 
@@ -50,13 +51,106 @@ def _resolve(resolution: str, duration: str) -> tuple[int, int, int]:
     return res["width"], res["height"], DURATION_PRESETS[duration]
 
 
-def _delivery(path: Path, preset: str) -> Path:
+def _delivery(path: Path, preset: str, enhance_quality: bool = True) -> Path:
     target = EXPORT_PRESETS.get(preset)
     if target is None:
         return path
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out = OUTPUTS_DIR / f"delivery_{target[0]}x{target[1]}_{stamp}.mp4"
-    return export_delivery(path, out, *target)
+    return export_delivery(path, out, *target, enhance_quality=enhance_quality)
+
+
+def preview_image_sequence(target_duration, character_bible, style, prompt1, prompt2, prompt3, prompt4):
+    steps = [p.strip() for p in [prompt1, prompt2, prompt3, prompt4] if p and p.strip()]
+    if not steps:
+        steps = ["Scene 1: Enter your starting prompt / action beat above"]
+    lines = [
+        f"### 🎬 Continuous Image Sequence Plan · {target_duration}",
+        f"**Visual Style:** {style}",
+        f"**Character Consistency Lock:** {character_bible or 'Not specified'}",
+        "",
+        "---",
+    ]
+    for i, p in enumerate(steps, start=1):
+        lines.append(f"**Step {i} ({'Initial Keyframe' if i==1 else 'Keyframe or Auto-Chained Frame'}):** {p}")
+    lines.append("")
+    lines.append("> 💡 **Continuous Animation Tip:** Upload high-quality cartoon images for each scene, or leave subsequent images blank to let the AI automatically extract and carry over the previous clip's ending frame.")
+    return "\n\n".join(lines)
+
+
+def generate_image_sequence(
+    target_duration: str,
+    character_bible: str,
+    style: str,
+    quality_preset: str,
+    resolution: str,
+    negative: str,
+    seed: int,
+    steps: int,
+    guidance: float,
+    # Step 1
+    img1, prompt1, camera1,
+    # Step 2
+    img2, prompt2, camera2,
+    # Step 3
+    img3, prompt3, camera3,
+    # Step 4
+    img4, prompt4, camera4,
+    progress=gr.Progress(),
+):
+    raw_steps = [
+        {"image": img1, "prompt": prompt1, "camera": camera1},
+        {"image": img2, "prompt": prompt2, "camera": camera2},
+        {"image": img3, "prompt": prompt3, "camera": camera3},
+        {"image": img4, "prompt": prompt4, "camera": camera4},
+    ]
+    active_steps = [s for s in raw_steps if (s["prompt"] and s["prompt"].strip()) or s["image"] is not None]
+    if not active_steps:
+        raise gr.Error("Please enter a prompt or upload an image for at least Scene 1.")
+
+    # Determine frames per step based on target continuous duration
+    if "8.0" in target_duration:
+        # 8s target: 2 scenes of 121 frames (~4.0s each) = 8.0s continuous video
+        target_step_count = min(len(active_steps), 2)
+        frames_per_step = 121
+    elif "10.0" in target_duration:
+        # 10s target: 3 scenes of 97 frames (~3.2s each) = ~9.7s continuous video
+        target_step_count = min(len(active_steps), 3)
+        frames_per_step = 97
+    else:
+        target_step_count = len(active_steps)
+        frames_per_step = 121
+
+    steps_to_run = active_steps[:target_step_count]
+    for s in steps_to_run:
+        s["frames"] = frames_per_step
+
+    res = RESOLUTION_PRESETS[resolution]
+    width, height = res["width"], res["height"]
+    
+    logs: list[str] = [f"Starting {len(steps_to_run)}-step continuous cartoon animation ({target_duration})..."]
+    callback = _progress_bridge(progress, logs)
+
+    final_path, individual_clips = SEQUENCE_GENERATOR.generate_sequence(
+        sequence_steps=steps_to_run,
+        character_bible=character_bible,
+        style_name=style,
+        width=width,
+        height=height,
+        num_inference_steps=int(steps),
+        guidance_scale=float(guidance),
+        negative_prompt=negative,
+        seed=int(seed),
+        progress_callback=callback,
+    )
+
+    delivered_path = _delivery(final_path, quality_preset, enhance_quality=True)
+    total_sec = (frames_per_step / DEFAULT_FPS) * len(steps_to_run)
+    logs.append(f"✅ Generated {len(steps_to_run)} continuous clips · Total runtime: {total_sec:.1f}s")
+    logs.append(f"🎬 Saved high quality continuous video at: {delivered_path.name}")
+
+    return str(delivered_path), "\n".join(logs[-20:])
+
 
 
 def _progress_bridge(progress, logs: list[str]):
@@ -336,8 +430,8 @@ def create_app() -> gr.Blocks:
         <section class="hero-shell">
           <div class="hero-kicker">LOCAL • OFFLINE AFTER FIRST DOWNLOAD • RTX 4050 PROFILE</div>
           <h1>LTX <span>Video Director Studio</span></h1>
-          <p>Choose a creative mode, add a prompt and optional visual reference, then generate with mode-aware directing for comics, real-world footage, action, or continuous cartoon stories.</p>
-          <div class="hero-pills"><b>General</b><b>Comics</b><b>Real World</b><b>Action</b><b>Cartoon Stories</b><b>2B LTX • 8-bit</b></div>
+          <p>Create continuous 8s–10s cartoon videos from prompt & image sequences, or direct scenes for Comics, Real-World, Action, and General creative workflows.</p>
+          <div class="hero-pills"><b>🎬 Continuous Sequence (8s-10s)</b><b>✨ General</b><b>📚 Comics</b><b>🌍 Real World</b><b>⚡ Action</b><b>🧸 Cartoon Story</b><b>2B LTX • 8-bit</b></div>
         </section>
         """)
 
@@ -348,15 +442,135 @@ def create_app() -> gr.Blocks:
 
         gr.HTML("""
         <section class="mode-grid">
+          <article><span>🎬</span><b>Continuous Sequence</b><small>8s-10s image & prompt chain</small></article>
           <article><span>✨</span><b>General</b><small>Free-form T2V / I2V</small></article>
           <article><span>📚</span><b>Comics</b><small>Ink, manga, graphic novel</small></article>
           <article><span>🌍</span><b>Real World</b><small>Live action & commercials</small></article>
-          <article><span>⚡</span><b>Action</b><small>Readable dynamic choreography</small></article>
-          <article><span>🧸</span><b>Cartoon Story</b><small>Multi-scene continuity</small></article>
+          <article><span>⚡</span><b>Action</b><small>Dynamic choreography</small></article>
         </section>
         """)
 
         with gr.Tabs():
+            with gr.Tab("🎬 Continuous Image Sequence Studio (8s - 10s)"):
+                gr.Markdown(
+                    "## 🎬 Continuous Cartoon Image Sequence Studio\n\n"
+                    "Enter your cartoon scene prompts and upload corresponding keyframe cartoon images step by step. "
+                    "The AI maintains seamless visual character continuity across scenes and joins them into a high-quality **8 to 10 second continuous video**."
+                )
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=6):
+                        with gr.Group():
+                            with gr.Row():
+                                seq_target_duration = gr.Dropdown(
+                                    choices=[
+                                        "8.0 Seconds Continuous Video (~241 frames • 2 scenes x 4.0s)",
+                                        "10.0 Seconds Continuous Video (~300 frames • 3 scenes x 3.3s)",
+                                        "Custom Sequence (4.0s per active scene)",
+                                    ],
+                                    value="8.0 Seconds Continuous Video (~241 frames • 2 scenes x 4.0s)",
+                                    label="⏱️ Target Total Continuous Duration",
+                                )
+                                seq_style = gr.Dropdown(
+                                    list(CARTOON_STYLES),
+                                    value="Premium 3D Kids Animation",
+                                    label="🎨 Cartoon Visual Style",
+                                )
+                            with gr.Row():
+                                seq_quality = gr.Dropdown(
+                                    ["1080p Landscape", "720p Landscape", "Native MP4", "1080p Portrait", "1080p Square"],
+                                    value="1080p Landscape",
+                                    label="✨ High-Quality Delivery Mode (Lanczos + Crisp Edge Enhancer)",
+                                )
+                                seq_resolution = gr.Dropdown(
+                                    list(RESOLUTION_PRESETS),
+                                    value=DEFAULT_RESOLUTION,
+                                    label="Native RTX 4050 Render Size",
+                                )
+                            seq_character_bible = gr.Textbox(
+                                label="🔒 Character Continuity Lock (Bible)",
+                                placeholder="Describe main character appearance locked across all scenes: e.g. Milo the orange fox with green eyes, teal scarf, and brown boots.",
+                                lines=2,
+                            )
+
+                        gr.Markdown("### 🎞️ Step-by-Step Sequence Beats & Keyframes")
+                        with gr.Accordion("🎬 Scene 1 (Starting Keyframe / Action)", open=True):
+                            with gr.Row():
+                                img1 = gr.Image(type="pil", label="Keyframe Image 1 (Optional anchor)", height=150)
+                                with gr.Column():
+                                    prompt1 = gr.Textbox(
+                                        label="Scene 1 Action Beat",
+                                        placeholder="E.g. A cheerful cartoon puppy plays with a red ball in the sunny backyard.",
+                                        lines=2,
+                                    )
+                                    camera1 = gr.Dropdown(CAMERA_MOTIONS, value="Gentle dolly in", label="Camera Motion 1")
+
+                        with gr.Accordion("🎬 Scene 2 (Continuation 1)", open=True):
+                            with gr.Row():
+                                img2 = gr.Image(type="pil", label="Keyframe Image 2 (Optional / Auto-continues from Scene 1)", height=150)
+                                with gr.Column():
+                                    prompt2 = gr.Textbox(
+                                        label="Scene 2 Action Beat",
+                                        placeholder="E.g. The puppy chases the rolling ball through the garden flowers.",
+                                        lines=2,
+                                    )
+                                    camera2 = gr.Dropdown(CAMERA_MOTIONS, value="Stable lateral tracking", label="Camera Motion 2")
+
+                        with gr.Accordion("🎬 Scene 3 (Continuation 2)", open=False):
+                            with gr.Row():
+                                img3 = gr.Image(type="pil", label="Keyframe Image 3 (Optional / Auto-continues from Scene 2)", height=150)
+                                with gr.Column():
+                                    prompt3 = gr.Textbox(
+                                        label="Scene 3 Action Beat",
+                                        placeholder="E.g. The puppy catches the ball happily and wags its tail.",
+                                        lines=2,
+                                    )
+                                    camera3 = gr.Dropdown(CAMERA_MOTIONS, value="Controlled orbit around the subject", label="Camera Motion 3")
+
+                        with gr.Accordion("🎬 Scene 4 (Continuation 3)", open=False):
+                            with gr.Row():
+                                img4 = gr.Image(type="pil", label="Keyframe Image 4 (Optional / Auto-continues from Scene 3)", height=150)
+                                with gr.Column():
+                                    prompt4 = gr.Textbox(
+                                        label="Scene 4 Action Beat",
+                                        placeholder="E.g. The puppy runs back towards the porch with the ball.",
+                                        lines=2,
+                                    )
+                                    camera4 = gr.Dropdown(CAMERA_MOTIONS, value="Slow cinematic pan", label="Camera Motion 4")
+
+                        with gr.Accordion("Advanced Parameters", open=False):
+                            seq_negative = gr.Textbox(label="Negative Prompt", value=NEGATIVE_PROMPT, lines=2)
+                            with gr.Row():
+                                seq_steps = gr.Slider(8, 40, value=DEFAULT_NUM_INFERENCE_STEPS, step=1, label="Inference steps")
+                                seq_guidance = gr.Slider(1.0, 7.0, value=DEFAULT_GUIDANCE_SCALE, step=0.1, label="Guidance Scale")
+                                seq_seed = gr.Number(value=-1, precision=0, label="Seed (-1 random)")
+
+                        with gr.Row():
+                            seq_preview_btn = gr.Button("📋 Preview Sequence Plan", elem_classes=["soft-btn"])
+                            seq_generate_btn = gr.Button("🚀 Generate Continuous 8s-10s Video", variant="primary", elem_classes=["primary-action"])
+
+                    with gr.Column(scale=5):
+                        seq_preview_md = gr.Markdown("### Sequence plan and timeline will appear here…", elem_classes=["sequence-card"])
+                        seq_output_video = gr.Video(label="🎬 Continuous Video Master Output", autoplay=True, height=420)
+                        seq_status_log = gr.Textbox(label="Generation Progress & QC Status", lines=9, interactive=False)
+
+                seq_preview_btn.click(
+                    preview_image_sequence,
+                    [seq_target_duration, seq_character_bible, seq_style, prompt1, prompt2, prompt3, prompt4],
+                    seq_preview_md,
+                )
+                seq_generate_btn.click(
+                    generate_image_sequence,
+                    [
+                        seq_target_duration, seq_character_bible, seq_style, seq_quality, seq_resolution,
+                        seq_negative, seq_seed, seq_steps, seq_guidance,
+                        img1, prompt1, camera1,
+                        img2, prompt2, camera2,
+                        img3, prompt3, camera3,
+                        img4, prompt4, camera4,
+                    ],
+                    [seq_output_video, seq_status_log],
+                )
+
             with gr.Tab("✨ General Studio"):
                 gr.Markdown("## General Video Studio\n\nUse this when you already know exactly what you want to prompt. Uploading an image automatically switches generation to Image-to-Video.")
                 with gr.Row(equal_height=False):

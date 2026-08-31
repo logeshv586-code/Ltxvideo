@@ -121,11 +121,8 @@ class VideoGenerator:
             HF_REPO_ID,
             subfolder="text_encoder",
             cache_dir=cache_dir,
-            quantization_config=BitsAndBytesConfig(load_in_8bit=True),
+            quantization_config=BitsAndBytesConfig(load_in_8bit=True, llm_int8_enable_fp32_cpu_offload=True),
             torch_dtype=torch.float16,
-            device_map="auto",
-            max_memory=max_memory,
-            offload_folder=offload_folder,
             low_cpu_mem_usage=True,
         )
 
@@ -136,9 +133,6 @@ class VideoGenerator:
             cache_dir=cache_dir,
             quantization_config=DiffusersBitsAndBytesConfig(load_in_8bit=True),
             torch_dtype=torch.float16,
-            device_map="auto",
-            max_memory=max_memory,
-            offload_folder=offload_folder,
             low_cpu_mem_usage=True,
         )
 
@@ -150,11 +144,10 @@ class VideoGenerator:
             text_encoder=text_encoder,
             transformer=transformer,
             torch_dtype=torch.float16,
-            device_map="balanced",
-            max_memory=max_memory,
-            offload_folder=offload_folder,
             low_cpu_mem_usage=True,
         )
+
+        self.pipe.enable_model_cpu_offload()
 
         if ENABLE_VAE_TILING and hasattr(self.pipe.vae, "enable_tiling"):
             self.pipe.vae.enable_tiling()

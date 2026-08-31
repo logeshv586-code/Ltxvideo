@@ -117,4 +117,99 @@ class CartoonStoryGenerator:
         concatenate_videos_streaming(clips, output, target_fps=DEFAULT_FPS)
         if progress_callback:
             progress_callback("Cartoon story assembled", 1.0)
-        return output
+class ContinuousSequenceGenerator:
+    """High-quality continuous image-and-prompt sequence animator with character continuity."""
+
+    def __init__(self, generator: VideoGenerator | None = None) -> None:
+        self.generator = generator or VideoGenerator()
+
+    def generate_sequence(
+        self,
+        sequence_steps: list[dict],
+        character_bible: str,
+        style_name: str,
+        width: int,
+        height: int,
+        num_inference_steps: int,
+        guidance_scale: float,
+        negative_prompt: str,
+        seed: int,
+        progress_callback: Progress = None,
+    ) -> tuple[Path, list[Path]]:
+        active_steps = [s for s in sequence_steps if s.get("prompt", "").strip() or s.get("image") is not None]
+        if not active_steps:
+            raise ValueError("Please provide at least one sequence step with a prompt or image.")
+
+        clips: list[Path] = []
+        total = len(active_steps)
+        previous_frame: Image.Image | None = None
+        style = CARTOON_STYLES.get(style_name, style_name)
+
+        for idx, step in enumerate(active_steps):
+            step_prompt = step.get("prompt", "").strip() or "Cartoon character performs continuous smooth animated action."
+            step_image = step.get("image")
+            camera = step.get("camera", "Gentle dolly in")
+            frames = int(step.get("frames", 121))
+
+            continuity_cue = (
+                "Opening sequence scene."
+                if idx == 0
+                else "Seamless direct sequence continuation; maintain identical character design, colors, costume, proportions, and lighting."
+            )
+            char_text = f" Character continuity: {character_bible}." if character_bible.strip() else ""
+            full_prompt = (
+                f"Cartoon animation scene {idx + 1} of {total}. {continuity_cue} "
+                f"Action beat: {step_prompt}.{char_text} Visual style: {style}. Camera direction: {camera}. "
+                "Crisp lines, saturated colors, coherent physical motion, no jump cuts, high quality 30fps animation."
+            )
+
+            if progress_callback:
+                progress_callback(f"Animating sequence step {idx + 1}/{total}…", idx / total)
+
+            step_seed = -1 if seed < 0 else int(seed) + idx * 7
+            
+            # Determine anchor image: explicit image for this step, or continuity from previous clip
+            anchor_image = step_image if step_image is not None else previous_frame
+
+            if anchor_image is None:
+                clip = self.generator.generate_text_to_video(
+                    prompt=full_prompt,
+                    negative_prompt=negative_prompt,
+                    width=width,
+                    height=height,
+                    num_frames=frames,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    seed=step_seed,
+                    progress_callback=None,
+                )
+            else:
+                clip = self.generator.generate_image_to_video(
+                    prompt=full_prompt,
+                    image=anchor_image,
+                    negative_prompt=negative_prompt,
+                    width=width,
+                    height=height,
+                    num_frames=frames,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    seed=step_seed,
+                    progress_callback=None,
+                )
+
+            clip_path = Path(clip)
+            clips.append(clip_path)
+            previous_frame = extract_last_frame(clip_path)
+
+            if progress_callback:
+                progress_callback(f"Step {idx + 1}/{total} completed", (idx + 0.95) / total)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output = OUTPUTS_DIR / f"continuous_sequence_{timestamp}.mp4"
+        concatenate_videos_streaming(clips, output, target_fps=DEFAULT_FPS)
+        
+        if progress_callback:
+            progress_callback(f"Continuous sequence of {total} steps assembled successfully!", 1.0)
+
+        return output, clips
+
