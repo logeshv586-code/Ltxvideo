@@ -181,6 +181,8 @@ class VideoGenerator:
 
     def _run_pipe_with_cuda_retry(self, mode: str, kwargs: dict, progress_callback: Progress):
         self._load_pipeline(mode, progress_callback)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         try:
             return self.pipe(**kwargs)
         except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
@@ -190,6 +192,8 @@ class VideoGenerator:
             self._report(progress_callback, "CUDA memory failure detected; clearing the model and retrying once…", 0.46)
             self.unload_model()
             self._load_pipeline(mode, progress_callback)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             return self.pipe(**kwargs)
 
     def _record_qc(self, path: Path, width: int, height: int, num_frames: int) -> VideoQCReport:

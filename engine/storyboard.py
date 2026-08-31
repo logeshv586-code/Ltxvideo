@@ -90,33 +90,39 @@ class CartoonStoryGenerator:
 
         for idx, beat in enumerate(beats):
             prompt = build_scene_prompt(beat, idx, len(beats), style_name, character_bible)
-            if progress_callback:
-                progress_callback(f"Scene {idx + 1}/{len(beats)}: preparing continuity", idx / len(beats))
+            
+            def scene_cb(msg: str, p: float):
+                if progress_callback:
+                    progress_callback(f"Scene {idx + 1}/{len(beats)}: {msg}", (idx + max(0.0, p)) / len(beats))
 
+            scene_cb("preparing continuity", 0.05)
             scene_seed = -1 if seed < 0 else int(seed) + idx
             if previous_frame is None and idx == 0:
                 clip = self.generator.generate_text_to_video(
                     prompt, negative_prompt, width, height, frames_per_scene,
                     num_inference_steps, guidance_scale, scene_seed,
-                    progress_callback=None,
+                    progress_callback=scene_cb,
                 )
             else:
                 clip = self.generator.generate_image_to_video(
                     prompt, previous_frame, negative_prompt, width, height, frames_per_scene,
                     num_inference_steps, guidance_scale, scene_seed,
-                    progress_callback=None,
+                    progress_callback=scene_cb,
                 )
 
             clips.append(Path(clip))
             previous_frame = extract_last_frame(clip)
             if progress_callback:
-                progress_callback(f"Scene {idx + 1}/{len(beats)} complete", (idx + 0.9) / len(beats))
+                progress_callback(f"Scene {idx + 1}/{len(beats)} complete", (idx + 1.0) / len(beats))
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output = OUTPUTS_DIR / f"cartoon_story_{timestamp}.mp4"
         concatenate_videos_streaming(clips, output, target_fps=DEFAULT_FPS)
         if progress_callback:
             progress_callback("Cartoon story assembled", 1.0)
+        return output
+
+
 class ContinuousSequenceGenerator:
     """High-quality continuous image-and-prompt sequence animator with character continuity."""
 
@@ -171,6 +177,12 @@ class ContinuousSequenceGenerator:
             # Determine anchor image: explicit image for this step, or continuity from previous clip
             anchor_image = step_image if step_image is not None else previous_frame
 
+            def step_cb(msg: str, p: float):
+                if progress_callback:
+                    progress_callback(f"Step {idx + 1}/{total}: {msg}", (idx + max(0.0, p)) / total)
+
+            step_cb("starting generation", 0.05)
+
             if anchor_image is None:
                 clip = self.generator.generate_text_to_video(
                     prompt=full_prompt,
@@ -181,7 +193,7 @@ class ContinuousSequenceGenerator:
                     num_inference_steps=num_inference_steps,
                     guidance_scale=guidance_scale,
                     seed=step_seed,
-                    progress_callback=None,
+                    progress_callback=step_cb,
                 )
             else:
                 clip = self.generator.generate_image_to_video(
@@ -194,7 +206,7 @@ class ContinuousSequenceGenerator:
                     num_inference_steps=num_inference_steps,
                     guidance_scale=guidance_scale,
                     seed=step_seed,
-                    progress_callback=None,
+                    progress_callback=step_cb,
                 )
 
             clip_path = Path(clip)
