@@ -1,15 +1,17 @@
 """Simple customer-facing personal video maker."""
 from __future__ import annotations
 
+import re
+
 import gradio as gr
 
 from config import NEGATIVE_PROMPT
 from engine.longform import (
     ASPECT_LABELS,
     CLIP_LENGTHS,
+    CUSTOMER_QUALITY_CHOICES,
     DURATION_SECONDS,
     GENERATION_MODES,
-    QUALITY_PROFILES,
     LongFormVideoGenerator,
     plan_markdown,
     plan_story,
@@ -21,45 +23,48 @@ from engine.video_processor import export_delivery
 GENERATOR = OptimizedVideoGenerator()
 LONGFORM = LongFormVideoGenerator(GENERATOR)
 
+AUTO_LOOK = "Auto • detect from description"
 STYLE_PRESETS = {
     "3D Animation": (
-        "premium stylized 3D animated film, expressive appealing characters, clean rounded geometry, "
-        "stable proportions, polished materials, soft cinematic global illumination, readable acting, "
-        "coherent props and environment, rich but controlled color, crisp silhouettes"
+        "premium stylized 3D animated film, expressive appealing characters, clean rounded geometry, stable proportions, "
+        "polished materials with visible texture detail, soft cinematic global illumination, readable facial acting, "
+        "coherent props and environment, rich controlled color, crisp silhouettes, family-feature animation finish"
     ),
     "Cinematic": (
-        "cinematic realistic video, natural materials, believable motion, controlled film lighting, "
-        "clean dynamic range and polished color grading"
+        "cinematic realistic video, natural materials, believable motion, controlled film lighting, clean dynamic range, "
+        "fine surface texture, realistic depth and polished color grading"
     ),
     "Clay Animation": (
-        "high-quality handcrafted clay animation, tactile clay textures, miniature sets, charming characters, "
-        "soft studio lighting and smooth generated motion"
+        "premium handcrafted clay animation, clearly visible tactile clay texture, miniature practical-set look, charming rounded characters, "
+        "soft cinematic studio lighting, expressive stop-motion-style acting, clean facial features and polished family-film finish"
     ),
     "Anime": (
-        "polished anime film look, expressive acting, detailed painted backgrounds, clean linework, cinematic composition"
+        "polished anime feature-film look, expressive acting, detailed painted backgrounds, clean linework, controlled cel shading, "
+        "cinematic composition and stable character design"
     ),
     "Product Video": (
-        "premium product commercial, accurate product geometry, crisp material detail, controlled reflections, "
-        "studio lighting and deliberate camera movement"
+        "premium product commercial, accurate product geometry, crisp material detail, controlled reflections, studio lighting, "
+        "clean edges and deliberate camera movement"
     ),
 }
+LOOK_CHOICES = [AUTO_LOOK, *STYLE_PRESETS.keys()]
 
 DEFAULT_NEGATIVE = (
-    "blurry, smeared textures, warped geometry, distorted face, deformed limbs, duplicate subjects, extra limbs, "
+    "blurry, smeared texture, muddy detail, warped geometry, distorted face, deformed limbs, duplicate subjects, extra limbs, "
     "broken anatomy, inconsistent character design, identity drift, flicker, jitter, frozen frames, morphing objects, "
-    "muddy lighting, low detail, text, watermark, logo"
+    "low detail, melted features, unreadable text, subtitles, watermark, logo"
 )
 
 CSS = """
 .gradio-container { max-width: 1240px !important; }
-.hero { padding: 26px 30px; border-radius: 22px; margin: 6px 0 18px;
+.hero { padding: 24px 28px; border-radius: 22px; margin: 6px 0 18px;
         background: linear-gradient(135deg, rgba(79,70,229,.16), rgba(14,165,233,.09));
         border: 1px solid rgba(120,120,150,.20); }
 .hero h1 { font-size: 38px; margin: 0 0 8px; letter-spacing: -.035em; }
-.hero p { margin:0; font-size:16px; line-height:1.55; opacity:.82; max-width:850px; }
+.hero p { margin:0; font-size:16px; line-height:1.55; opacity:.82; max-width:900px; }
 .creator-card, .result-card { border:1px solid rgba(120,120,150,.18); border-radius:18px; padding:16px; }
 .generate-btn { min-height: 56px !important; font-weight: 800 !important; border-radius: 14px !important; }
-.small-note { opacity:.72; font-size:12px; }
+.quality-note { padding:10px 12px; border-radius:12px; background:rgba(99,102,241,.08); font-size:12px; line-height:1.45; }
 """
 
 
@@ -94,6 +99,28 @@ def _build_plan(
     )
 
 
+def _detect_look(description: str, style_hint: str) -> str:
+    text = f"{style_hint} {description}".lower()
+    if re.search(r"\b(clay|claymation|stop[ -]?motion|handcrafted clay)\b", text):
+        return "Clay Animation"
+    if re.search(r"\b(anime|manga|cel[ -]?shaded)\b", text):
+        return "Anime"
+    if re.search(r"\b(product|commercial|advert|packshot)\b", text):
+        return "Product Video"
+    if re.search(r"\b(realistic|photoreal|live[ -]?action|cinematic real)\b", text):
+        return "Cinematic"
+    if re.search(r"\b(3d|cartoon|kids animation|animated character|pixar|family animation)\b", text):
+        return "3D Animation"
+    # The current product is mainly being tested as an animated personal video
+    # maker, so a clean 3D look is the least surprising automatic fallback.
+    return "3D Animation"
+
+
+def _resolved_look(selected: str, description: str, style_hint: str) -> tuple[str, str]:
+    name = _detect_look(description, style_hint) if selected == AUTO_LOOK else selected
+    return name, STYLE_PRESETS.get(name, STYLE_PRESETS["3D Animation"])
+
+
 def preview_plan(description, mode, total_duration, clip_length, quality, aspect_label):
     try:
         return plan_markdown(_build_plan(description, mode, total_duration, clip_length, quality, aspect_label))
@@ -123,11 +150,14 @@ def generate_video(
     except Exception as exc:
         return None, "### Video setup\n\nPlanning failed.", f"Planning failed: {exc}"
 
+    actual_look, style_prompt = _resolved_look(style_name, description, plan.style_hint)
     logs = [
         f"Mode: {plan.generation_mode}",
         f"Requested duration: {plan.target_seconds}s",
         f"GPU clip size: {plan.clip_seconds:.1f}s × {plan.scene_count}",
-        f"Quality: {plan.profile.label}",
+        f"Native render: {plan.width}x{plan.height} @ {plan.profile.fps} fps",
+        f"Inference: {plan.profile.inference_steps} steps · guidance {plan.profile.guidance_scale}",
+        f"Look: {actual_look}",
     ]
 
     def callback(message: str, value: float) -> None:
@@ -137,7 +167,7 @@ def generate_video(
     try:
         raw = LONGFORM.generate(
             plan=plan,
-            style_prompt=STYLE_PRESETS[style_name],
+            style_prompt=style_prompt,
             character_lock=consistency or "",
             reference_image=reference_image,
             negative_prompt=negative_prompt or DEFAULT_NEGATIVE or NEGATIVE_PROMPT,
@@ -158,13 +188,11 @@ def generate_video(
             duration_seconds=plan.target_seconds,
         )
         logs.append(f"Done: {delivered.name}")
-        return str(delivered), plan_markdown(plan), "\n".join(logs[-40:])
+        return str(delivered), plan_markdown(plan), "\n".join(logs[-50:])
     except Exception as exc:
-        # Keep the page usable and show the real backend problem in the status
-        # box instead of only a generic Gradio red error badge.
         message = f"Generation stopped: {type(exc).__name__}: {exc}"
         logs.append(message)
-        return None, plan_markdown(plan), "\n".join(logs[-40:])
+        return None, plan_markdown(plan), "\n".join(logs[-50:])
 
 
 def create_app() -> gr.Blocks:
@@ -184,9 +212,8 @@ def create_app() -> gr.Blocks:
             """
             <section class="hero">
               <h1>LTX Personal Video Maker</h1>
-              <p>Describe the video once. Choose how long it should be, the quality and the output size.
-              A 6 GB RTX 4050 renders safe 4-second or heavier 8-second clips; longer videos continue automatically
-              part by part and are combined into one final video.</p>
+              <p>Describe what should happen. Choose single or continuous video, duration, quality and output size.
+              The app focuses each GPU render on one achievable action, continues longer videos part-by-part, then prepares a clean 720p delivery file.</p>
             </section>
             """
         )
@@ -197,9 +224,10 @@ def create_app() -> gr.Blocks:
                     label="Describe your video",
                     placeholder=(
                         "Example: On the moon, an orange fox meets a cow and a sheep. The fox helps them make a cookie. "
-                        "After that they walk together across the moon while Earth glows in the background."
+                        "After that they walk together while Earth glows in the background.\n\n"
+                        "You can also add lines such as Style: clay animation or Camera: slow zoom in."
                     ),
-                    lines=9,
+                    lines=10,
                 )
 
                 mode = gr.Radio(
@@ -213,21 +241,22 @@ def create_app() -> gr.Blocks:
                         choices=list(CLIP_LENGTHS),
                         value="4 seconds • Recommended",
                         label="Single / backend clip length",
-                        info="4 sec is safest for high quality. 8 sec is heavier but supported by the 4050 path.",
+                        info="4 sec gives the best detail. High + 8 sec automatically uses a memory-safe native size.",
                         visible=False,
                     )
                     total_duration = gr.Dropdown(
                         choices=list(DURATION_SECONDS),
                         value="15 seconds",
                         label="Video duration",
-                        info="The backend automatically creates as many 4s/8s parts as needed.",
+                        info="Long videos are generated in safe GPU-sized parts and combined automatically.",
                     )
 
                 with gr.Row():
                     quality = gr.Radio(
-                        choices=list(QUALITY_PROFILES),
-                        value="Balanced",
+                        choices=list(CUSTOMER_QUALITY_CHOICES),
+                        value="High",
                         label="Quality",
+                        info="High is the default for final output. Balanced is faster and safer for long runs.",
                     )
                     aspect = gr.Dropdown(
                         choices=list(ASPECT_LABELS),
@@ -235,10 +264,16 @@ def create_app() -> gr.Blocks:
                         label="Size / pixels",
                     )
 
+                gr.HTML(
+                    "<div class='quality-note'><b>Final-quality policy:</b> the old 384×224 Fast mode is now draft/internal only. "
+                    "High 4-second clips generate at 576×320 natively before 720p delivery; 8-second High clips automatically use a 512×288 memory-safe native render.</div>"
+                )
+
                 style = gr.Dropdown(
-                    choices=list(STYLE_PRESETS),
-                    value="3D Animation",
+                    choices=LOOK_CHOICES,
+                    value=AUTO_LOOK,
                     label="Look",
+                    info="Auto reads explicit Style/Look instructions from your description so the UI does not conflict with your prompt.",
                 )
 
                 with gr.Accordion("Optional reference & consistency", open=False):
@@ -269,7 +304,7 @@ def create_app() -> gr.Blocks:
                 plan_view = gr.Markdown(
                     "### Video setup\n\nChoose your settings and click **Preview** or **Generate video**."
                 )
-                status = gr.Textbox(label="Generation status", lines=12, interactive=False)
+                status = gr.Textbox(label="Generation status", lines=14, interactive=False)
 
         mode.change(_mode_visibility, inputs=mode, outputs=[clip_length, total_duration])
         preview.click(
