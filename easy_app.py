@@ -1,9 +1,9 @@
 """Customer-first LTX Video Creator.
 
 This is the default UI for normal users. Technical frame counts, inference
-steps and GPU memory controls are selected automatically from three simple
-quality modes. The original app.py remains available as the legacy advanced
-studio for developers.
+steps and GPU memory controls are selected automatically from simple quality
+modes. The original app.py remains available as the legacy advanced studio for
+developers.
 """
 from __future__ import annotations
 
@@ -28,13 +28,15 @@ GENERATOR = OptimizedVideoGenerator()
 LONGFORM = LongFormVideoGenerator(GENERATOR)
 
 STYLE_PRESETS = {
+    "Premium 3D Animation": (
+        "premium stylized 3D animated short film, expressive appealing characters with large readable eyes, "
+        "clean rounded geometry, stable proportions, polished materials, soft cinematic global illumination, "
+        "subtle volumetric atmosphere, strong foreground/background separation, family-feature animation quality, "
+        "smooth purposeful acting, coherent props and environments, crisp readable silhouettes"
+    ),
     "Cinematic Real World": (
         "photorealistic cinematic footage, natural materials and skin, physically believable motion, "
         "clean dynamic range, controlled film lighting, polished but realistic color grading"
-    ),
-    "Premium 3D Animation": (
-        "premium stylized 3D animation, expressive characters, clean geometry, detailed materials, "
-        "soft global illumination, cinematic family-film quality"
     ),
     "Clay Animation": (
         "high-quality handcrafted clay animation, tactile clay textures, miniature practical sets, "
@@ -57,6 +59,12 @@ STYLE_PRESETS = {
         "cinematic framing and subtle dimensional parallax"
     ),
 }
+
+REFERENCE_NEGATIVE = (
+    "blurry, smeared textures, warped geometry, distorted face, deformed limbs, duplicate subjects, "
+    "extra limbs, broken anatomy, inconsistent character design, identity drift, flicker, jitter, frame freezing, "
+    "morphing objects, muddy lighting, low detail, text, watermark, logo"
+)
 
 CSS = """
 .gradio-container { max-width: 1280px !important; }
@@ -120,8 +128,9 @@ def generate_video(
 
     style_prompt = STYLE_PRESETS[style_name]
     logs: list[str] = [
-        f"Automatic plan: {plan.scene_count} scenes · ~{plan.estimated_seconds:.0f}s · {quality} mode",
-        f"Native scene render: {plan.width}x{plan.height}; final delivery is upscaled after generation.",
+        f"Automatic plan: {plan.scene_count} shots · ~{plan.estimated_seconds:.0f}s · {quality} mode",
+        f"Planner mode: {plan.continuity_mode}; related shots use {plan.profile.tail_frames}-frame motion continuation.",
+        f"Native scene render: {plan.width}x{plan.height} @ {plan.profile.fps} fps; final delivery is prepared after generation.",
     ]
     callback = _progress_bridge(progress, logs)
 
@@ -130,27 +139,30 @@ def generate_video(
         style_prompt=style_prompt,
         character_lock=character_lock or "",
         reference_image=reference_image,
-        negative_prompt=negative_prompt or NEGATIVE_PROMPT,
+        negative_prompt=negative_prompt or REFERENCE_NEGATIVE or NEGATIVE_PROMPT,
         seed=int(seed),
         progress_callback=callback,
     )
 
     delivery_width, delivery_height = _delivery_dimensions(plan.aspect, quality)
     delivered = raw_path.with_name(raw_path.stem + f"_{delivery_width}x{delivery_height}.mp4")
-    progress(0.998, desc="Preparing social-media delivery file")
+    progress(0.998, desc="Preparing clean 24 fps social-media delivery file")
     export_delivery(
         raw_path,
         delivered,
         delivery_width,
         delivery_height,
         enhance_quality=True,
+        target_fps=plan.profile.fps,
     )
     logs.append(f"Complete: {delivered.name}")
     logs.append(
-        "Note: delivery resolution is a high-quality upscale of the native LTX render; "
-        "native detail is controlled by the selected quality mode."
+        "Continuity safety: a shot that develops severe tail blur/freeze is retried before it can contaminate later shots."
     )
-    return str(delivered), plan_markdown(plan), "\n".join(logs[-30:])
+    logs.append(
+        "Delivery note: 1280×720 is a high-quality delivery upscale; native generated detail is shown in the scene plan."
+    )
+    return str(delivered), plan_markdown(plan), "\n".join(logs[-40:])
 
 
 def create_app() -> gr.Blocks:
@@ -165,12 +177,12 @@ def create_app() -> gr.Blocks:
             """
             <section class="hero">
               <h1>LTX Easy Video Creator</h1>
-              <p>Paste one idea, paragraph, script or story. The creator automatically decides the scene count,
-              generates every scene in order, carries visual continuity forward, and assembles one final video.
-              No frame-count or diffusion knowledge is required.</p>
+              <p>Paste one idea, paragraph, script or story. Short single-action prompts become continuous motion
+              extensions instead of unrelated scene restarts. Longer stories are split into chronological shots.
+              Related shots carry a multi-frame motion tail forward, with visual QC before chaining.</p>
               <div class="chips">
-                <span>RTX 4050 6 GB optimized</span><span>Auto scene planning</span><span>Up to 5 minutes</span>
-                <span>YouTube 16:9</span><span>Reels / Shorts 9:16</span><span>Sequential low-VRAM rendering</span>
+                <span>RTX 4050 6 GB path</span><span>Multi-frame continuity</span><span>24 fps animation delivery</span>
+                <span>Up to 5 minutes</span><span>720p social delivery</span><span>Visual QC + retry</span>
               </div>
             </section>
             """
@@ -186,9 +198,9 @@ def create_app() -> gr.Blocks:
                 story = gr.Textbox(
                     label="1. Describe your complete video",
                     placeholder=(
-                        "Example: A small clay astronaut wakes inside a moon base, notices a glowing cookie on the table, "
-                        "walks toward it, picks it up, then the room lights flicker and a tiny alien appears...\n\n"
-                        "You can paste a full paragraph or a long script."
+                        "Example: A tiny chef character pops out of a lunch box in a moonlit forest, raises a wooden spoon, "
+                        "surprises an orange fox and a round green creature, then proudly explains the recipe while they react...\n\n"
+                        "A short one-action prompt stays continuous; a longer paragraph becomes a storyboard."
                     ),
                     lines=12,
                 )
@@ -199,14 +211,14 @@ def create_app() -> gr.Blocks:
                 )
                 character_lock = gr.Textbox(
                     label="Optional character consistency",
-                    placeholder="Example: Milo is an orange fox with green eyes, teal scarf and brown boots. Keep this exact design throughout.",
+                    placeholder="Example: Milo is an orange fox with green eyes, cream muzzle and chest, no clothing. Keep this exact design throughout.",
                     lines=2,
                 )
 
                 with gr.Row():
                     style = gr.Dropdown(
                         choices=list(STYLE_PRESETS),
-                        value="Cinematic Real World",
+                        value="Premium 3D Animation",
                         label="2. Visual style",
                     )
                     aspect = gr.Dropdown(
@@ -218,36 +230,36 @@ def create_app() -> gr.Blocks:
                 with gr.Row():
                     duration = gr.Dropdown(
                         choices=list(DURATION_SECONDS),
-                        value="Auto from story",
+                        value="15 seconds",
                         label="4. Video length",
-                        info="Auto estimates length from your paragraph. You can also force 15 sec to 5 min.",
+                        info="15 seconds matches the supplied reference style well. Auto is useful for longer scripts.",
                     )
                     quality = gr.Radio(
                         choices=list(QUALITY_PROFILES),
-                        value="Balanced",
+                        value="Reference 720p",
                         label="5. Quality / speed",
-                        info="Balanced is recommended for RTX 4050 6 GB.",
+                        info="Reference 720p targets the supplied 24 fps 720p animation look. Use Balanced if 6 GB VRAM is tight.",
                     )
 
                 with gr.Accordion("Advanced (usually leave unchanged)", open=False):
-                    negative = gr.Textbox(label="Avoid", value=NEGATIVE_PROMPT, lines=3)
+                    negative = gr.Textbox(label="Avoid", value=REFERENCE_NEGATIVE, lines=4)
                     seed = gr.Number(value=-1, precision=0, label="Seed (-1 = random)")
 
                 with gr.Row():
-                    preview = gr.Button("Preview automatic scene plan")
+                    preview = gr.Button("Preview automatic shot plan")
                     generate = gr.Button("Create complete video", variant="primary", elem_classes=["primary-create"])
 
             with gr.Column(scale=5):
                 plan_view = gr.Markdown(
-                    "### Automatic video plan\n\nEnter your story and click **Preview automatic scene plan**.",
+                    "### Automatic video plan\n\nEnter your story and click **Preview automatic shot plan**.",
                     elem_classes=["plan-card"],
                 )
                 output = gr.Video(label="Final video", autoplay=True, height=430)
-                status = gr.Textbox(label="Progress", lines=10, interactive=False)
+                status = gr.Textbox(label="Progress", lines=12, interactive=False)
 
         gr.Markdown(
-            "**For developers:** the older multi-studio interface is still kept in `app.py`. "
-            "The default launcher now uses this simplified customer interface."
+            "**For developers:** the older multi-studio interface remains in `app.py`. "
+            "The default launcher uses this continuity-safe customer interface."
         )
 
         preview.click(preview_plan, [story, duration, quality, aspect], plan_view)
