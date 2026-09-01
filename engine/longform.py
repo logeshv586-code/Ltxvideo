@@ -4,12 +4,17 @@ The user describes the video once. The planner turns that request into a
 chronological timeline and renders it in GPU-sized clips. RTX 4050 users can
 render one 4-second or 8-second clip directly; longer videos are generated
 clip-by-clip and joined while preserving story context and motion continuity.
+
+Quality v4 treats low-resolution Fast output as draft-only. Customer-facing
+final renders use Balanced or High native generation, strip prompt metadata
+from the visible action, and keep each short diffusion clip focused on only the
+amount of action that can realistically happen in that clip.
 """
 from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -58,9 +63,11 @@ class RenderProfile:
 
 
 QUALITY_PROFILES: dict[str, RenderProfile] = {
+    # Kept for legacy/developer use. The personal-video-maker UI no longer
+    # presents this as a normal final-quality choice.
     "Fast": RenderProfile(
         key="fast",
-        label="Fast • fastest 720p delivery",
+        label="Draft only • 384×224 native • fastest preview",
         landscape=(384, 224),
         portrait=(224, 384),
         square=(320, 320),
@@ -71,27 +78,30 @@ QUALITY_PROFILES: dict[str, RenderProfile] = {
     ),
     "Balanced": RenderProfile(
         key="balanced",
-        label="Balanced • recommended for RTX 4050 6 GB",
+        label="Balanced • 512×288 native • RTX 4050 safe final",
         landscape=(512, 288),
         portrait=(288, 512),
         square=(384, 384),
-        frames_per_scene=97,
-        inference_steps=16,
-        guidance_scale=4.0,
-        delivery_long_edge=1280,
-    ),
-    "High": RenderProfile(
-        key="high",
-        label="High • best detail; 4-second clips recommended",
-        landscape=(576, 320),
-        portrait=(320, 576),
-        square=(448, 448),
         frames_per_scene=97,
         inference_steps=20,
         guidance_scale=4.0,
         delivery_long_edge=1280,
     ),
+    "High": RenderProfile(
+        key="high",
+        label="High • 576×320 native • best 4-second detail",
+        landscape=(576, 320),
+        portrait=(320, 576),
+        square=(448, 448),
+        frames_per_scene=97,
+        inference_steps=24,
+        guidance_scale=4.5,
+        delivery_long_edge=1280,
+    ),
 }
+
+# The main customer UI intentionally hides the low-resolution draft profile.
+CUSTOMER_QUALITY_CHOICES = ("Balanced", "High")
 
 DURATION_SECONDS = {
     "15 seconds": 15,
@@ -123,6 +133,8 @@ class StoryPlan:
     continuity_mode: str
     generation_mode: str = "Continuous Video"
     clip_frames: int = 97
+    style_hint: str = ""
+    camera_hint: str = ""
 
     @property
     def scene_count(self) -> int:
@@ -138,9 +150,52 @@ ACTION_SPLIT = re.compile(
     flags=re.IGNORECASE,
 )
 
+DIRECTIVE_LINE = re.compile(
+    r"^\s*(style|look|duration|camera|aspect(?:\s+ratio)?|resolution|size|quality|fps|frame\s*rate)\s*:\s*(.*?)\s*$",
+    flags=re.IGNORECASE,
+)
+
+VISUAL_ACTION_HINT = re.compile(
+    r"\b(sit|sits|stand|stands|walk|walks|run|runs|jump|jumps|move|moves|fly|flies|float|floats|"
+    r"look|looks|smile|smiles|turn|turns|open|opens|close|closes|pick|picks|hold|holds|raise|raises|"
+    r"wave|waves|cook|cooks|make|makes|help|helps|speak|speaks|talk|talks|appear|appears|enter|enters|"
+    r"leave|leaves|dance|dances|play|plays|reach|reaches|eat|eats|drink|drinks|drive|drives|cruise|cruises)\b",
+    flags=re.IGNORECASE,
+)
+
 
 def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip())
+
+
+def _shorten_words(text: str, max_words: int) -> str:
+    words = _clean(text).split()
+    if len(words) <= max_words:
+        return " ".join(words)
+    return " ".join(words[:max_words]).rstrip(" ,;:-")
+
+
+def extract_prompt_directives(text: str) -> tuple[str, dict[str, str]]:
+    """Separate prompt metadata from visible story/action content.
+
+    Customers often paste prompt-engineering notes such as ``Style:``,
+    ``Duration:`` or ``Camera:``. Sending those lines verbatim into every LTX
+    shot can contradict the UI selection and overload a four-second clip. The
+    planner therefore keeps useful style/camera hints separately and removes
+    timing/format metadata from the visible timeline.
+    """
+    directives: dict[str, str] = {}
+    kept: list[str] = []
+    for line in (text or "").splitlines():
+        match = DIRECTIVE_LINE.match(line)
+        if not match:
+            kept.append(line)
+            continue
+        key = match.group(1).lower().replace(" ", "")
+        value = _clean(match.group(2))
+        if value:
+            directives[key] = value
+    return _clean(" ".join(kept)), directives
 
 
 def _action_units(story: str, target_count: int = 1) -> list[str]:
@@ -151,13 +206,17 @@ def _action_units(story: str, target_count: int = 1) -> list[str]:
     parts = [p.strip(" ,.-") for p in ACTION_SPLIT.split(text) if p.strip(" ,.-")]
 
     # Users often type one long sentence with repeated "and" instead of
-    # punctuation. If the strong transition split did not produce enough
-    # timeline beats, use conjunctions as secondary boundaries.
+    # punctuation. If strong transitions did not produce enough beats, use
+    # conjunctions as secondary boundaries.
     if len(parts) < target_count and " and " in text.lower():
         expanded: list[str] = []
         for part in parts or [text]:
             if len(part.split()) >= 8 and " and " in part.lower():
-                sub = [p.strip(" ,.-") for p in re.split(r"\s+and\s+", part, flags=re.IGNORECASE) if p.strip(" ,.-")]
+                sub = [
+                    p.strip(" ,.-")
+                    for p in re.split(r"\s+and\s+", part, flags=re.IGNORECASE)
+                    if p.strip(" ,.-")
+                ]
                 expanded.extend(sub or [part])
             else:
                 expanded.append(part)
@@ -166,25 +225,39 @@ def _action_units(story: str, target_count: int = 1) -> list[str]:
     return parts or [text]
 
 
+def _single_clip_action(story: str, max_words: int = 44) -> str:
+    """Choose only the first visually achievable action for one 4/8s clip."""
+    units = _action_units(story, target_count=2)
+    if not units:
+        return "Establish the requested subject and perform one clear visible action."
+
+    visual = [unit for unit in units if VISUAL_ACTION_HINT.search(unit)]
+    chosen = (visual or units)[:2]
+    return _shorten_words("; then ".join(chosen), max_words)
+
+
 def _merge_units(units: list[str], count: int) -> list[str]:
     if not units:
         return ["Establish the requested subject and action clearly."] * count
     if len(units) == count:
-        return units
+        return [_shorten_words(unit, 44) for unit in units]
     if len(units) > count:
         out: list[str] = []
         for index in range(count):
             start = round(index * len(units) / count)
             end = round((index + 1) * len(units) / count)
-            out.append("; then ".join(units[start:end]))
+            out.append(_shorten_words("; then ".join(units[start:end]), 44))
         return out
 
-    out = units[:]
+    out = [_shorten_words(unit, 44) for unit in units]
     while len(out) < count:
         source = out[-1]
         phase = len(out) + 1
         out.append(
-            f"Continue naturally from the previous moment. Progress the same story further without restarting; continuation phase {phase}: {source}"
+            _shorten_words(
+                f"Continue the previous action naturally without restarting it; progression phase {phase}: {source}",
+                44,
+            )
         )
     return out[:count]
 
@@ -192,6 +265,21 @@ def _merge_units(units: list[str], count: int) -> list[str]:
 def estimate_auto_seconds(story: str) -> int:
     words = max(1, len(story.split()))
     return min(MAX_LONGFORM_SECONDS, max(8, math.ceil(words / 2.5)))
+
+
+def _memory_safe_profile(profile: RenderProfile, clip_frames: int) -> RenderProfile:
+    """Keep High 8-second clips practical on 6 GB VRAM."""
+    if profile.key != "high" or clip_frames <= 97:
+        return profile
+    return replace(
+        profile,
+        label="High • 8-second memory-safe • 512×288 native",
+        landscape=(512, 288),
+        portrait=(288, 512),
+        square=(384, 384),
+        inference_steps=22,
+        guidance_scale=4.25,
+    )
 
 
 def plan_story(
@@ -202,30 +290,33 @@ def plan_story(
     generation_mode: str = "Continuous Video",
     clip_length_label: str = "4 seconds • Recommended",
 ) -> StoryPlan:
-    story = _clean(story)
-    if not story:
+    clean_story, directives = extract_prompt_directives(story)
+    if not clean_story:
         raise ValueError("Describe what you want the video to show.")
 
-    profile = QUALITY_PROFILES.get(quality_label, QUALITY_PROFILES["Balanced"])
+    requested_profile = QUALITY_PROFILES.get(quality_label, QUALITY_PROFILES["Balanced"])
+    clip_frames = CLIP_LENGTHS.get(clip_length_label, 97)
+    profile = _memory_safe_profile(requested_profile, clip_frames)
     aspect = ASPECT_LABELS.get(aspect_label, "16:9")
     width, height = profile.size_for(aspect)
-    clip_frames = CLIP_LENGTHS.get(clip_length_label, 97)
     clip_seconds = clip_frames / profile.fps
     mode = generation_mode if generation_mode in GENERATION_MODES else "Continuous Video"
 
     if mode == "Single Clip":
         target_seconds = int(round(clip_seconds))
-        beats = [story]
+        beats = [_single_clip_action(clean_story, 44 if clip_frames <= 97 else 64)]
         continuity_mode = "single"
     else:
         target_seconds = int(DURATION_SECONDS.get(duration_label, 15))
         target_seconds = max(15, min(MAX_LONGFORM_SECONDS, target_seconds))
         count = min(MAX_LONGFORM_SCENES, max(1, math.ceil(target_seconds / clip_seconds)))
-        beats = _merge_units(_action_units(story, target_count=count), count)
+        beats = _merge_units(_action_units(clean_story, target_count=count), count)
         continuity_mode = "continuous"
 
+    style_hint = directives.get("style", directives.get("look", ""))
+    camera_hint = directives.get("camera", "")
     return StoryPlan(
-        story=story,
+        story=clean_story,
         beats=tuple(beats),
         target_seconds=target_seconds,
         estimated_seconds=len(beats) * clip_seconds,
@@ -236,6 +327,8 @@ def plan_story(
         continuity_mode=continuity_mode,
         generation_mode=mode,
         clip_frames=clip_frames,
+        style_hint=style_hint,
+        camera_hint=camera_hint,
     )
 
 
@@ -247,21 +340,45 @@ def scene_prompt(
     character_lock: str,
     continuity_mode: str = "continuous",
     full_story: str = "",
+    camera_hint: str = "",
 ) -> str:
-    continuity = (
-        "Opening clip: establish all important subjects, their appearance, environment and intended action clearly."
-        if index == 0
-        else "Continue directly from the conditioned previous motion. Do not restart the story, replace the subject, change identity, teleport objects or reset camera direction."
+    if index == 0:
+        continuity = "Establish the important subject, environment and spatial relationships clearly in one coherent shot."
+    else:
+        continuity = (
+            "Continue directly from the conditioned previous motion. Preserve subject identity, proportions, colors, "
+            "lighting, screen direction and camera momentum; do not restart the story or teleport objects."
+        )
+
+    if continuity_mode == "single":
+        focus = "This is one short clip: perform only the current visible action and do not rush unrelated later events into this shot."
+    else:
+        focus = "Advance only the current timeline beat; leave later events for later continuation clips."
+
+    character = (
+        f" Subject lock: {_shorten_words(character_lock, 36)}."
+        if character_lock.strip()
+        else ""
     )
-    character = f" Character/subject lock: {character_lock}." if character_lock.strip() else ""
-    context = f" Overall requested video: {full_story}." if full_story else ""
+    context = (
+        f" Concise overall context: {_shorten_words(full_story, 70)}."
+        if full_story
+        else ""
+    )
+    camera = (
+        f" Camera direction: {_shorten_words(camera_hint, 24)}."
+        if camera_hint.strip()
+        else ""
+    )
+    action = _shorten_words(beat, 48)
+
     return (
         f"Video clip {index + 1} of {total}. {continuity}{context} "
-        f"Current timeline action: {beat}. "
-        "Show a clear beginning, visible progression and readable end pose for this clip while the overall video continues forward. "
-        f"{character} Visual style: {style_prompt}. "
-        "Smooth purposeful motion, stable subject identity, coherent anatomy and object geometry, consistent colors and lighting, "
-        "cinematic composition, clean detail, no morphing, no duplicate subjects, no flicker, no sudden jump cut."
+        f"Current visible action: {action}. {focus}{character}{camera} "
+        f"Visual style: {style_prompt}. "
+        "Premium clean image quality, readable facial features, crisp subject silhouette, coherent materials, "
+        "stable anatomy and object geometry, smooth purposeful motion, controlled cinematic lighting, consistent texture detail. "
+        "No morphing, duplicate subjects, extra limbs, flicker, muddy texture, unreadable text, sudden jump cut or identity change."
     )
 
 
@@ -276,9 +393,14 @@ def plan_markdown(plan: StoryPlan, preview_limit: int = 8) -> str:
         "### Video setup",
         headline,
         f"**Quality:** {plan.profile.label}",
+        f"**Native generation:** {plan.width}×{plan.height} · {plan.profile.inference_steps} steps",
         f"**Output:** {delivery} · {plan.profile.fps} fps · {plan.aspect}",
         f"**RTX 4050 render parts:** {plan.scene_count} × about {plan.clip_seconds:.1f} sec",
     ]
+    if plan.style_hint:
+        lines.append(f"**Detected style instruction:** {plan.style_hint}")
+    if plan.camera_hint:
+        lines.append(f"**Detected camera instruction:** {plan.camera_hint}")
     if plan.generation_mode != "Single Clip":
         lines.append("Each part continues from the previous one automatically; the final file is trimmed to the selected duration.")
     lines.append("")
@@ -382,6 +504,7 @@ class LongFormVideoGenerator:
                 character_lock,
                 continuity_mode=plan.continuity_mode,
                 full_story=plan.story,
+                camera_hint=plan.camera_hint,
             )
             clip_seed = -1 if seed is None or int(seed) < 0 else int(seed) + index * 17
 
