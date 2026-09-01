@@ -2,6 +2,7 @@ import unittest
 
 from engine.longform import (
     ASPECT_LABELS,
+    CLIP_LENGTHS,
     QUALITY_PROFILES,
     estimate_auto_seconds,
     plan_story,
@@ -9,92 +10,101 @@ from engine.longform import (
 )
 
 
-class LongFormPlannerTests(unittest.TestCase):
-    def test_auto_duration_scales_with_story_length(self):
-        short = estimate_auto_seconds("A fox opens a door and smiles.")
-        long = estimate_auto_seconds("word " * 700)
-        self.assertGreaterEqual(short, 8)
-        self.assertGreater(long, short)
-        self.assertLessEqual(long, 300)
+class PersonalVideoPlannerTests(unittest.TestCase):
+    def test_auto_duration_scaling_helper_still_caps_at_five_minutes(self):
+        self.assertGreaterEqual(estimate_auto_seconds("A fox opens a door."), 8)
+        self.assertLessEqual(estimate_auto_seconds("word " * 1000), 300)
 
-    def test_five_minute_fast_plan_fits_scene_cap(self):
-        story = "A traveler crosses a changing landscape while the camera follows the journey. " * 20
+    def test_single_four_second_clip(self):
+        plan = plan_story(
+            "A fox walks across the moon.",
+            "15 seconds",
+            "Balanced",
+            "Landscape • 1280×720 • 16:9",
+            generation_mode="Single Clip",
+            clip_length_label="4 seconds • Recommended",
+        )
+        self.assertEqual(plan.scene_count, 1)
+        self.assertEqual(plan.clip_frames, 97)
+        self.assertEqual(plan.target_seconds, 4)
+        self.assertEqual(plan.generation_mode, "Single Clip")
+
+    def test_single_eight_second_clip(self):
+        plan = plan_story(
+            "A fox walks across the moon.",
+            "15 seconds",
+            "Balanced",
+            "Landscape • 1280×720 • 16:9",
+            generation_mode="Single Clip",
+            clip_length_label="8 seconds • Max practical",
+        )
+        self.assertEqual(plan.scene_count, 1)
+        self.assertEqual(plan.clip_frames, 193)
+        self.assertEqual(plan.target_seconds, 8)
+        self.assertLessEqual(plan.clip_frames, 241)
+
+    def test_continuous_fifteen_seconds_uses_gpu_sized_chunks(self):
+        story = "On the moon a fox meets a cow. Then they make a cookie. After that they walk together."
         plan = plan_story(
             story,
+            "15 seconds",
+            "Balanced",
+            "Landscape • 1280×720 • 16:9",
+            generation_mode="Continuous Video",
+            clip_length_label="4 seconds • Recommended",
+        )
+        self.assertEqual(plan.target_seconds, 15)
+        self.assertEqual(plan.scene_count, 4)
+        self.assertEqual(plan.continuity_mode, "continuous")
+        self.assertTrue(any("cookie" in beat.lower() for beat in plan.beats))
+
+    def test_five_minutes_stays_within_scene_cap(self):
+        plan = plan_story(
+            "A traveler crosses changing landscapes and meets different people along the journey.",
             "5 minutes",
             "Fast",
-            "YouTube / Landscape (16:9)",
+            "Landscape • 1280×720 • 16:9",
+            generation_mode="Continuous Video",
+            clip_length_label="4 seconds • Recommended",
         )
         self.assertLessEqual(plan.scene_count, 96)
         self.assertGreaterEqual(plan.estimated_seconds, 295)
-        self.assertEqual(plan.aspect, "16:9")
 
-    def test_all_native_sizes_and_continuation_counts_are_ltx_aligned(self):
+    def test_all_native_sizes_and_clip_lengths_are_ltx_aligned(self):
         for profile in QUALITY_PROFILES.values():
             for size in (profile.landscape, profile.portrait, profile.square):
                 self.assertEqual(size[0] % 32, 0)
                 self.assertEqual(size[1] % 32, 0)
-            self.assertEqual((profile.frames_per_scene - 1) % 8, 0)
-            self.assertEqual((profile.tail_frames - 1) % 8, 0)
-            continued_frames = profile.frames_per_scene + profile.continuation_overlap
-            self.assertEqual((continued_frames - 1) % 8, 0)
             self.assertEqual(profile.fps, 24)
+            self.assertEqual((profile.tail_frames - 1) % 8, 0)
+        for frames in CLIP_LENGTHS.values():
+            self.assertEqual((frames - 1) % 8, 0)
+            self.assertLessEqual(frames + 16, 241)
 
-    def test_all_customer_aspects_resolve(self):
-        story = "A product rotates slowly on a studio table while light travels across its surface."
+    def test_customer_aspects_resolve(self):
         for label, expected in ASPECT_LABELS.items():
-            plan = plan_story(story, "15 seconds", "Balanced", label)
+            plan = plan_story(
+                "A product rotates on a studio table.",
+                "15 seconds",
+                "Balanced",
+                label,
+            )
             self.assertEqual(plan.aspect, expected)
 
-    def test_short_single_action_prompt_uses_continuous_extension(self):
-        plan = plan_story(
-            "Cyberpunk boulevard with one hovercar cruising smoothly at night.",
-            "15 seconds",
-            "Reference 720p",
-            "YouTube / Landscape (16:9)",
-        )
-        self.assertEqual(plan.continuity_mode, "continuous")
-        self.assertGreaterEqual(plan.scene_count, 3)
-        self.assertTrue(all(beat == plan.story for beat in plan.beats))
-
-    def test_long_story_with_transitions_uses_storyboard(self):
-        story = (
-            "A fox finds a metal lunch box in a moonlit forest. Then a tiny chef jumps out. "
-            "The chef raises a spoon while the fox reacts. Finally they all gather around the box."
-        )
-        plan = plan_story(
-            story,
-            "15 seconds",
-            "Reference 720p",
-            "YouTube / Landscape (16:9)",
-        )
-        self.assertEqual(plan.continuity_mode, "storyboard")
-
-    def test_scene_prompt_has_explicit_storyboard_continuity(self):
+    def test_continuation_prompt_keeps_full_story_and_identity(self):
         prompt = scene_prompt(
-            "Milo reaches for the glowing key",
+            "The fox helps make a cookie",
             1,
-            5,
-            "premium 3D animation",
-            "Milo is an orange fox with a teal scarf",
-            continuity_mode="storyboard",
-        )
-        self.assertIn("Direct continuation", prompt)
-        self.assertIn("orange fox", prompt)
-        self.assertIn("stable proportions", prompt)
-
-    def test_continuous_prompt_prevents_action_restart(self):
-        prompt = scene_prompt(
-            "A hovercar cruises steadily along the boulevard",
-            2,
             4,
             "premium 3D animation",
-            "",
+            "The fox is orange with green eyes",
             continuity_mode="continuous",
+            full_story="A fox meets a cow on the moon and they make a cookie together.",
         )
-        self.assertIn("Seamless extension", prompt)
-        self.assertIn("do not restart", prompt)
-        self.assertIn("camera momentum", prompt)
+        self.assertIn("Continue directly", prompt)
+        self.assertIn("orange", prompt)
+        self.assertIn("Overall requested video", prompt)
+        self.assertIn("cookie", prompt)
 
 
 if __name__ == "__main__":
