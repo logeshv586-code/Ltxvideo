@@ -1,13 +1,4 @@
-"""Memory-aware LTX-Video generator for RTX 4050 laptops.
-
-Every generation passes through the Video Skill Engine before inference. The
-engine preserves the user's literal intent, applies only relevant directing
-skills, hardens negative constraints, and performs a post-render technical QC.
-
-Long-form generation uses LTXConditionPipeline so a short sequence of previous
-frames can condition the next shot. This avoids the recursive last-frame-only
-I2V degradation that caused geometry and sharpness drift in earlier builds.
-"""
+"""Memory-aware LTX video generator for RTX 4050 laptops."""
 from __future__ import annotations
 
 import gc
@@ -57,11 +48,11 @@ class VideoGenerator:
         if width % 32 or height % 32:
             raise ValueError("LTX width and height must be divisible by 32.")
         if (num_frames - 1) % 8:
-            raise ValueError("LTX frame count must follow 8k+1 (49, 97, 121, ...).")
+            raise ValueError("LTX frame count must follow 8k+1 (49, 97, 193, 241, ...).")
         if num_frames > MAX_NATIVE_FRAMES:
             raise ValueError(
-                f"RTX 4050 mode caps one native clip at {MAX_NATIVE_FRAMES} frames. "
-                "Use Easy Video Creator for longer videos."
+                f"RTX 4050 mode caps one native render at {MAX_NATIVE_FRAMES} frames. "
+                "Use Continuous Video mode for longer output."
             )
 
     def prepare_skill_plan(
@@ -76,19 +67,20 @@ class VideoGenerator:
         character_lock: str = "",
         fps: int = DEFAULT_FPS,
     ) -> SkillPlan:
-        """Build the mandatory skill plan used by every generation path."""
         fps = max(1, int(fps))
-        plan = SKILL_ENGINE.plan(VideoRequest(
-            raw_prompt=prompt,
-            mode=skill_mode,
-            duration_seconds=num_frames / fps,
-            width=width,
-            height=height,
-            num_frames=num_frames,
-            has_reference=has_reference,
-            negative_prompt=negative_prompt,
-            character_lock=character_lock,
-        ))
+        plan = SKILL_ENGINE.plan(
+            VideoRequest(
+                raw_prompt=prompt,
+                mode=skill_mode,
+                duration_seconds=num_frames / fps,
+                width=width,
+                height=height,
+                num_frames=num_frames,
+                has_reference=has_reference,
+                negative_prompt=negative_prompt,
+                character_lock=character_lock,
+            )
+        )
         self.last_skill_plan = plan
         return plan
 
@@ -98,10 +90,9 @@ class VideoGenerator:
         self.unload_model()
 
         if not torch.cuda.is_available():
-            raise RuntimeError("CUDA GPU not detected. This profile requires an NVIDIA RTX GPU.")
+            raise RuntimeError("CUDA GPU not detected. An NVIDIA RTX GPU is required.")
 
-        self._report(progress_callback, "Loading quantized LTX 2B pipeline…", 0.05)
-
+        self._report(progress_callback, "Loading low-memory LTX pipeline…", 0.05)
         try:
             from diffusers import (
                 BitsAndBytesConfig as DiffusersBitsAndBytesConfig,
@@ -113,31 +104,32 @@ class VideoGenerator:
             from transformers import BitsAndBytesConfig, T5EncoderModel
         except ImportError as exc:
             raise RuntimeError(
-                "Missing LTX runtime packages. Run `python run.py` once to install dependencies."
+                "Required LTX packages are missing. Run `pip install -r requirements.txt` and restart."
             ) from exc
 
         if not ENABLE_8BIT:
-            raise RuntimeError("This build expects 8-bit mode for RTX 4050 hardware.")
+            raise RuntimeError("RTX 4050 mode expects 8-bit loading to fit 6 GB VRAM.")
 
-        max_memory = {0: GPU_MEMORY_BUDGET, "cpu": CPU_MEMORY_BUDGET}
-        # Keep these values materialized for diagnostics and future device-map
-        # support. CPU offload below remains the stable Windows/6 GB path.
-        _ = max_memory
-        offload_folder = str(MODELS_DIR / "offload")
-        Path(offload_folder).mkdir(parents=True, exist_ok=True)
+        # Retained as explicit hardware budgets for diagnostics. The stable path
+        # uses model CPU offload instead of a fragile per-module device map.
+        _ = {0: GPU_MEMORY_BUDGET, "cpu": CPU_MEMORY_BUDGET}
+        (MODELS_DIR / "offload").mkdir(parents=True, exist_ok=True)
         cache_dir = str(HF_CACHE_DIR)
 
-        self._report(progress_callback, "Loading T5 text encoder in 8-bit…", 0.12)
+        self._report(progress_callback, "Loading text encoder in 8-bit…", 0.12)
         text_encoder = T5EncoderModel.from_pretrained(
             HF_REPO_ID,
             subfolder="text_encoder",
             cache_dir=cache_dir,
-            quantization_config=BitsAndBytesConfig(load_in_8bit=True, llm_int8_enable_fp32_cpu_offload=True),
+            quantization_config=BitsAndBytesConfig(
+                load_in_8bit=True,
+                llm_int8_enable_fp32_cpu_offload=True,
+            ),
             torch_dtype=torch.float16,
             low_cpu_mem_usage=True,
         )
 
-        self._report(progress_callback, "Loading 2B video transformer in 8-bit…", 0.24)
+        self._report(progress_callback, "Loading video transformer in 8-bit…", 0.24)
         transformer = LTXVideoTransformer3DModel.from_pretrained(
             HF_REPO_ID,
             subfolder="transformer",
@@ -163,14 +155,11 @@ class VideoGenerator:
             torch_dtype=torch.float16,
             low_cpu_mem_usage=True,
         )
-
         self.pipe.enable_model_cpu_offload()
-
         if ENABLE_VAE_TILING and hasattr(self.pipe.vae, "enable_tiling"):
             self.pipe.vae.enable_tiling()
         if hasattr(self.pipe.vae, "enable_slicing"):
             self.pipe.vae.enable_slicing()
-
         self.mode = mode
         self._report(progress_callback, "LTX pipeline ready.", 0.45)
 
@@ -204,9 +193,10 @@ class VideoGenerator:
             return self.pipe(**kwargs)
         except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
             message = str(exc).lower()
-            if not isinstance(exc, torch.cuda.OutOfMemoryError) and "cuda" not in message and "out of memory" not in message:
+            memory_error = isinstance(exc, torch.cuda.OutOfMemoryError) or "out of memory" in message
+            if not memory_error:
                 raise
-            self._report(progress_callback, "CUDA memory failure detected; clearing the model and retrying once…", 0.46)
+            self._report(progress_callback, "GPU memory pressure detected; retrying once…", 0.46)
             self.unload_model()
             self._load_pipeline(mode, progress_callback)
             if torch.cuda.is_available():
@@ -221,18 +211,16 @@ class VideoGenerator:
         num_frames: int,
         fps: int = DEFAULT_FPS,
     ) -> VideoQCReport:
-        fps = max(1, int(fps))
         report = inspect_video(
             path,
             expected_width=width,
             expected_height=height,
-            expected_duration=num_frames / fps,
+            expected_duration=num_frames / max(1, int(fps)),
         )
         self.last_qc = report
         return report
 
     def generation_report(self) -> str:
-        """Human-readable skill + technical QC trace for the UI/logs."""
         parts: list[str] = []
         if self.last_skill_plan:
             parts.append(self.last_skill_plan.trace_text())
@@ -259,34 +247,36 @@ class VideoGenerator:
 
         self._validate_shape(width, height, num_frames)
         plan = self.prepare_skill_plan(
-            prompt, negative_prompt, width, height, num_frames,
-            has_reference=False, skill_mode=skill_mode, character_lock=character_lock, fps=fps,
-        )
-        self._report(
-            progress_callback,
-            f"Video Skill Engine: {len(plan.applied_skills)} skills active · quality gate {plan.quality_score}/100",
-            0.02,
+            prompt,
+            negative_prompt,
+            width,
+            height,
+            num_frames,
+            has_reference=False,
+            skill_mode=skill_mode,
+            character_lock=character_lock,
+            fps=fps,
         )
         actual_seed = self._seed(seed)
-        self._report(progress_callback, f"Generating {num_frames} frames (seed {actual_seed})…", 0.5)
-        generator = torch.Generator(device="cuda").manual_seed(actual_seed)
+        self._report(progress_callback, f"Generating opening clip (seed {actual_seed})…", 0.5)
         kwargs = dict(
             prompt=plan.prompt,
             negative_prompt=plan.negative_prompt,
             width=width,
             height=height,
             num_frames=num_frames,
+            frame_rate=int(fps),
             num_inference_steps=int(num_inference_steps),
             guidance_scale=float(guidance_scale),
             decode_timestep=0.05,
             decode_noise_scale=0.025,
-            generator=generator,
+            generator=torch.Generator(device="cuda").manual_seed(actual_seed),
         )
-        result = self._run_pipe_with_cuda_retry("t2v", kwargs, progress_callback).frames[0]
+        frames = self._run_pipe_with_cuda_retry("t2v", kwargs, progress_callback).frames[0]
         output = self._output_path("ltx_t2v")
-        export_to_video(result, str(output), fps=int(fps))
+        export_to_video(frames, str(output), fps=int(fps))
         qc = self._record_qc(output, width, height, num_frames, fps=fps)
-        self._report(progress_callback, f"Saved {output.name} · technical QC {'PASS' if not qc.fatal else 'FAIL'}", 1.0)
+        self._report(progress_callback, f"Saved {output.name} · QC {'PASS' if not qc.fatal else 'FAIL'}", 1.0)
         return output
 
     def generate_image_to_video(
@@ -311,20 +301,21 @@ class VideoGenerator:
         if image is None:
             raise ValueError("Reference image is required for image-to-video.")
         plan = self.prepare_skill_plan(
-            prompt, negative_prompt, width, height, num_frames,
-            has_reference=True, skill_mode=skill_mode, character_lock=character_lock, fps=fps,
-        )
-        self._report(
-            progress_callback,
-            f"Video Skill Engine: {len(plan.applied_skills)} skills active · quality gate {plan.quality_score}/100",
-            0.02,
+            prompt,
+            negative_prompt,
+            width,
+            height,
+            num_frames,
+            has_reference=True,
+            skill_mode=skill_mode,
+            character_lock=character_lock,
+            fps=fps,
         )
         actual_seed = self._seed(seed)
-        image = image.convert("RGB").resize((width, height), Image.Resampling.LANCZOS)
+        prepared = image.convert("RGB").resize((width, height), Image.Resampling.LANCZOS)
         self._report(progress_callback, f"Animating reference image (seed {actual_seed})…", 0.5)
-        generator = torch.Generator(device="cuda").manual_seed(actual_seed)
         kwargs = dict(
-            image=image,
+            image=prepared,
             prompt=plan.prompt,
             negative_prompt=plan.negative_prompt,
             width=width,
@@ -335,13 +326,13 @@ class VideoGenerator:
             guidance_scale=float(guidance_scale),
             decode_timestep=0.05,
             decode_noise_scale=0.025,
-            generator=generator,
+            generator=torch.Generator(device="cuda").manual_seed(actual_seed),
         )
-        result = self._run_pipe_with_cuda_retry("i2v", kwargs, progress_callback).frames[0]
+        frames = self._run_pipe_with_cuda_retry("i2v", kwargs, progress_callback).frames[0]
         output = self._output_path("ltx_i2v")
-        export_to_video(result, str(output), fps=int(fps))
+        export_to_video(frames, str(output), fps=int(fps))
         qc = self._record_qc(output, width, height, num_frames, fps=fps)
-        self._report(progress_callback, f"Saved {output.name} · technical QC {'PASS' if not qc.fatal else 'FAIL'}", 1.0)
+        self._report(progress_callback, f"Saved {output.name} · QC {'PASS' if not qc.fatal else 'FAIL'}", 1.0)
         return output
 
     def generate_conditioned_video(
@@ -360,16 +351,14 @@ class VideoGenerator:
         conditioning_frames: list[Image.Image] | None = None,
         reference_image: Image.Image | None = None,
         condition_strength: float = 1.0,
-        image_cond_noise_scale: float = 0.05,
+        image_cond_noise_scale: float = 0.025,
     ) -> Path:
-        """Generate/extend a clip using LTX multi-frame conditioning.
+        """Generate or extend a clip with the official LTX condition pipeline.
 
-        ``conditioning_frames`` takes priority over ``reference_image``. The
-        long-form renderer passes the previous clip's final motion sequence
-        here, allowing LTX to observe movement rather than guessing motion from
-        one potentially degraded still frame.
+        The direct ``video=`` / ``image=`` API is used instead of constructing
+        internal LTXVideoCondition objects. This is both simpler and compatible
+        with Diffusers 0.37.x, which is the version range used by this project.
         """
-        from diffusers.pipelines.ltx.pipeline_ltx_condition import LTXVideoCondition
         from diffusers.utils import export_to_video
 
         self._validate_shape(width, height, num_frames)
@@ -386,39 +375,7 @@ class VideoGenerator:
             character_lock=character_lock,
             fps=fps,
         )
-        self._report(
-            progress_callback,
-            f"Video Skill Engine: {len(plan.applied_skills)} skills active · quality gate {plan.quality_score}/100",
-            0.02,
-        )
 
-        conditions = []
-        if conditioning_frames:
-            prepared = [
-                frame.convert("RGB").resize((width, height), Image.Resampling.LANCZOS)
-                for frame in conditioning_frames
-            ]
-            conditions.append(LTXVideoCondition(
-                video=prepared,
-                frame_index=0,
-                strength=float(condition_strength),
-            ))
-        elif reference_image is not None:
-            prepared_image = reference_image.convert("RGB").resize(
-                (width, height), Image.Resampling.LANCZOS
-            )
-            conditions.append(LTXVideoCondition(
-                image=prepared_image,
-                frame_index=0,
-                strength=float(condition_strength),
-            ))
-
-        actual_seed = self._seed(seed)
-        action = "Extending previous motion" if conditioning_frames else (
-            "Animating reference image" if reference_image is not None else "Generating opening shot"
-        )
-        self._report(progress_callback, f"{action} (seed {actual_seed})…", 0.5)
-        generator = torch.Generator(device="cuda").manual_seed(actual_seed)
         kwargs = dict(
             prompt=plan.prompt,
             negative_prompt=plan.negative_prompt,
@@ -428,19 +385,40 @@ class VideoGenerator:
             frame_rate=fps,
             num_inference_steps=int(num_inference_steps),
             guidance_scale=float(guidance_scale),
+            guidance_rescale=0.7,
             image_cond_noise_scale=float(image_cond_noise_scale),
             decode_timestep=0.05,
             decode_noise_scale=0.025,
-            generator=generator,
+            generator=torch.Generator(device="cuda").manual_seed(self._seed(seed)),
         )
-        if conditions:
-            kwargs["conditions"] = conditions
 
-        result = self._run_pipe_with_cuda_retry("condition", kwargs, progress_callback).frames[0]
-        prefix = "ltx_continue" if conditioning_frames else "ltx_condition"
+        prefix = "ltx_condition"
+        if conditioning_frames:
+            prepared_video = [
+                frame.convert("RGB").resize((width, height), Image.Resampling.LANCZOS)
+                for frame in conditioning_frames
+            ]
+            kwargs.update(
+                video=prepared_video,
+                frame_index=0,
+                strength=float(condition_strength),
+            )
+            prefix = "ltx_continue"
+            self._report(progress_callback, "Continuing from previous motion frames…", 0.5)
+        elif reference_image is not None:
+            kwargs.update(
+                image=reference_image.convert("RGB").resize((width, height), Image.Resampling.LANCZOS),
+                frame_index=0,
+                strength=float(condition_strength),
+            )
+            self._report(progress_callback, "Animating reference image…", 0.5)
+        else:
+            self._report(progress_callback, "Generating conditioned clip…", 0.5)
+
+        frames = self._run_pipe_with_cuda_retry("condition", kwargs, progress_callback).frames[0]
         output = self._output_path(prefix)
-        export_to_video(result, str(output), fps=fps)
+        export_to_video(frames, str(output), fps=fps)
         qc = self._record_qc(output, width, height, num_frames, fps=fps)
         state = "PASS" if not qc.fatal and not qc.visual_failure else "REVIEW"
-        self._report(progress_callback, f"Saved {output.name} · scene QC {state}", 1.0)
+        self._report(progress_callback, f"Saved {output.name} · QC {state}", 1.0)
         return output
