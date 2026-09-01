@@ -29,12 +29,16 @@ class LongFormPlannerTests(unittest.TestCase):
         self.assertGreaterEqual(plan.estimated_seconds, 295)
         self.assertEqual(plan.aspect, "16:9")
 
-    def test_all_native_sizes_are_ltx_aligned(self):
+    def test_all_native_sizes_and_continuation_counts_are_ltx_aligned(self):
         for profile in QUALITY_PROFILES.values():
             for size in (profile.landscape, profile.portrait, profile.square):
                 self.assertEqual(size[0] % 32, 0)
                 self.assertEqual(size[1] % 32, 0)
-                self.assertEqual((profile.frames_per_scene - 1) % 8, 0)
+            self.assertEqual((profile.frames_per_scene - 1) % 8, 0)
+            self.assertEqual((profile.tail_frames - 1) % 8, 0)
+            continued_frames = profile.frames_per_scene + profile.continuation_overlap
+            self.assertEqual((continued_frames - 1) % 8, 0)
+            self.assertEqual(profile.fps, 24)
 
     def test_all_customer_aspects_resolve(self):
         story = "A product rotates slowly on a studio table while light travels across its surface."
@@ -42,17 +46,55 @@ class LongFormPlannerTests(unittest.TestCase):
             plan = plan_story(story, "15 seconds", "Balanced", label)
             self.assertEqual(plan.aspect, expected)
 
-    def test_scene_prompt_has_explicit_continuity(self):
+    def test_short_single_action_prompt_uses_continuous_extension(self):
+        plan = plan_story(
+            "Cyberpunk boulevard with one hovercar cruising smoothly at night.",
+            "15 seconds",
+            "Reference 720p",
+            "YouTube / Landscape (16:9)",
+        )
+        self.assertEqual(plan.continuity_mode, "continuous")
+        self.assertGreaterEqual(plan.scene_count, 3)
+        self.assertTrue(all(beat == plan.story for beat in plan.beats))
+
+    def test_long_story_with_transitions_uses_storyboard(self):
+        story = (
+            "A fox finds a metal lunch box in a moonlit forest. Then a tiny chef jumps out. "
+            "The chef raises a spoon while the fox reacts. Finally they all gather around the box."
+        )
+        plan = plan_story(
+            story,
+            "15 seconds",
+            "Reference 720p",
+            "YouTube / Landscape (16:9)",
+        )
+        self.assertEqual(plan.continuity_mode, "storyboard")
+
+    def test_scene_prompt_has_explicit_storyboard_continuity(self):
         prompt = scene_prompt(
             "Milo reaches for the glowing key",
             1,
             5,
             "premium 3D animation",
             "Milo is an orange fox with a teal scarf",
+            continuity_mode="storyboard",
         )
         self.assertIn("Direct continuation", prompt)
         self.assertIn("orange fox", prompt)
-        self.assertIn("end on a stable readable pose", prompt)
+        self.assertIn("stable proportions", prompt)
+
+    def test_continuous_prompt_prevents_action_restart(self):
+        prompt = scene_prompt(
+            "A hovercar cruises steadily along the boulevard",
+            2,
+            4,
+            "premium 3D animation",
+            "",
+            continuity_mode="continuous",
+        )
+        self.assertIn("Seamless extension", prompt)
+        self.assertIn("do not restart", prompt)
+        self.assertIn("camera momentum", prompt)
 
 
 if __name__ == "__main__":
