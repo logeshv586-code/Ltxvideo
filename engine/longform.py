@@ -1,9 +1,9 @@
 """Personal video planning and low-VRAM sequential rendering.
 
-The user describes the video once. The planner understands the requested total
-length and turns it into GPU-sized clips. RTX 4050 users can render one 4-second
-or 8-second clip directly; longer videos are generated clip-by-clip and joined
-while keeping story context and motion continuity.
+The user describes the video once. The planner turns that request into a
+chronological timeline and renders it in GPU-sized clips. RTX 4050 users can
+render one 4-second or 8-second clip directly; longer videos are generated
+clip-by-clip and joined while preserving story context and motion continuity.
 """
 from __future__ import annotations
 
@@ -134,7 +134,7 @@ class StoryPlan:
 
 
 ACTION_SPLIT = re.compile(
-    r"\s*(?:\.|!|\?|;|\n|,\s*then\s+|\bthen\b|\band then\b|\bafter that\b|\bafterwards\b|\bnext\b|\bfinally\b)\s*",
+    r"\s*(?:\.|!|\?|;|\n|,\s*then\s+|\band then\b|\bafter that\b|\bafterwards\b|\bfinally\b|\bnext\b|\bthen\b)\s*",
     flags=re.IGNORECASE,
 )
 
@@ -143,14 +143,26 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip())
 
 
-def _action_units(story: str) -> list[str]:
+def _action_units(story: str, target_count: int = 1) -> list[str]:
+    """Extract chronological actions even from casual run-on user prompts."""
     text = _clean(story)
     if not text:
         return []
     parts = [p.strip(" ,.-") for p in ACTION_SPLIT.split(text) if p.strip(" ,.-")]
-    if len(parts) <= 1 and " and " in text.lower():
-        rough = re.split(r"\s+and\s+", text, flags=re.IGNORECASE)
-        parts = [p.strip(" ,.-") for p in rough if p.strip(" ,.-")]
+
+    # Users often type one long sentence with repeated "and" instead of
+    # punctuation. If the strong transition split did not produce enough
+    # timeline beats, use conjunctions as secondary boundaries.
+    if len(parts) < target_count and " and " in text.lower():
+        expanded: list[str] = []
+        for part in parts or [text]:
+            if len(part.split()) >= 8 and " and " in part.lower():
+                sub = [p.strip(" ,.-") for p in re.split(r"\s+and\s+", part, flags=re.IGNORECASE) if p.strip(" ,.-")]
+                expanded.extend(sub or [part])
+            else:
+                expanded.append(part)
+        if len(expanded) > len(parts):
+            parts = expanded
     return parts or [text]
 
 
@@ -172,7 +184,7 @@ def _merge_units(units: list[str], count: int) -> list[str]:
         source = out[-1]
         phase = len(out) + 1
         out.append(
-            f"Continue naturally from the previous moment. Progress the same story and action further without restarting it; continuation phase {phase}: {source}"
+            f"Continue naturally from the previous moment. Progress the same story further without restarting; continuation phase {phase}: {source}"
         )
     return out[:count]
 
@@ -190,7 +202,6 @@ def plan_story(
     generation_mode: str = "Continuous Video",
     clip_length_label: str = "4 seconds • Recommended",
 ) -> StoryPlan:
-    """Create a customer-facing plan while keeping GPU chunking internal."""
     story = _clean(story)
     if not story:
         raise ValueError("Describe what you want the video to show.")
@@ -210,7 +221,7 @@ def plan_story(
         target_seconds = int(DURATION_SECONDS.get(duration_label, 15))
         target_seconds = max(15, min(MAX_LONGFORM_SECONDS, target_seconds))
         count = min(MAX_LONGFORM_SCENES, max(1, math.ceil(target_seconds / clip_seconds)))
-        beats = _merge_units(_action_units(story), count)
+        beats = _merge_units(_action_units(story, target_count=count), count)
         continuity_mode = "continuous"
 
     return StoryPlan(
@@ -237,10 +248,9 @@ def scene_prompt(
     continuity_mode: str = "continuous",
     full_story: str = "",
 ) -> str:
-    opening = index == 0
     continuity = (
-        "Opening clip: establish all important subjects, their appearance, the environment and the intended action clearly."
-        if opening
+        "Opening clip: establish all important subjects, their appearance, environment and intended action clearly."
+        if index == 0
         else "Continue directly from the conditioned previous motion. Do not restart the story, replace the subject, change identity, teleport objects or reset camera direction."
     )
     character = f" Character/subject lock: {character_lock}." if character_lock.strip() else ""
@@ -256,27 +266,21 @@ def scene_prompt(
 
 
 def plan_markdown(plan: StoryPlan, preview_limit: int = 8) -> str:
-    if plan.aspect == "9:16":
-        delivery = "720×1280"
-    elif plan.aspect == "1:1":
-        delivery = "720×720"
-    else:
-        delivery = "1280×720"
-
-    if plan.generation_mode == "Single Clip":
-        headline = f"**Single clip · {plan.clip_seconds:.1f} sec**"
-    else:
-        headline = f"**Continuous video · {plan.target_seconds} sec**"
-
+    delivery = "720×1280" if plan.aspect == "9:16" else ("720×720" if plan.aspect == "1:1" else "1280×720")
+    headline = (
+        f"**Single clip · {plan.clip_seconds:.1f} sec**"
+        if plan.generation_mode == "Single Clip"
+        else f"**Continuous video · {plan.target_seconds} sec**"
+    )
     lines = [
         "### Video setup",
         headline,
         f"**Quality:** {plan.profile.label}",
         f"**Output:** {delivery} · {plan.profile.fps} fps · {plan.aspect}",
-        f"**RTX 4050 render chunks:** {plan.scene_count} × about {plan.clip_seconds:.1f} sec",
+        f"**RTX 4050 render parts:** {plan.scene_count} × about {plan.clip_seconds:.1f} sec",
     ]
     if plan.generation_mode != "Single Clip":
-        lines.append("The backend continues each clip from the previous clip automatically and trims the final delivery to the selected duration.")
+        lines.append("Each part continues from the previous one automatically; the final file is trimmed to the selected duration.")
     lines.append("")
     for i, beat in enumerate(plan.beats[:preview_limit]):
         lines.append(f"**Part {i + 1}:** {beat}")
@@ -299,6 +303,30 @@ class LongFormVideoGenerator:
     def __init__(self, generator) -> None:
         self.generator = generator
 
+    def _base_kwargs(
+        self,
+        prompt: str,
+        plan: StoryPlan,
+        negative_prompt: str,
+        character_lock: str,
+        seed: int,
+        callback: Progress,
+        frames: int | None = None,
+    ) -> dict:
+        return dict(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            width=plan.width,
+            height=plan.height,
+            num_frames=int(frames or plan.clip_frames),
+            num_inference_steps=plan.profile.inference_steps,
+            guidance_scale=plan.profile.guidance_scale,
+            seed=seed,
+            progress_callback=callback,
+            character_lock=character_lock,
+            fps=plan.profile.fps,
+        )
+
     def _first_clip(
         self,
         prompt: str,
@@ -309,22 +337,27 @@ class LongFormVideoGenerator:
         seed: int,
         callback: Progress,
     ) -> Path:
-        kwargs = dict(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            width=plan.width,
-            height=plan.height,
-            num_frames=plan.clip_frames,
-            num_inference_steps=plan.profile.inference_steps,
-            guidance_scale=plan.profile.guidance_scale,
-            seed=seed,
-            progress_callback=callback,
-            character_lock=character_lock,
-            fps=plan.profile.fps,
-        )
+        kwargs = self._base_kwargs(prompt, plan, negative_prompt, character_lock, seed, callback)
         if reference_image is not None:
             return Path(self.generator.generate_image_to_video(image=reference_image, **kwargs))
         return Path(self.generator.generate_text_to_video(**kwargs))
+
+    def _i2v_fallback(
+        self,
+        prompt: str,
+        plan: StoryPlan,
+        anchor: Image.Image,
+        negative_prompt: str,
+        character_lock: str,
+        seed: int,
+        callback: Progress,
+    ) -> Path:
+        return Path(
+            self.generator.generate_image_to_video(
+                image=anchor,
+                **self._base_kwargs(prompt, plan, negative_prompt, character_lock, seed, callback),
+            )
+        )
 
     def generate(
         self,
@@ -361,35 +394,33 @@ class LongFormVideoGenerator:
 
             if index == 0:
                 accepted = self._first_clip(
-                    prompt,
-                    plan,
-                    reference_image,
-                    negative_prompt,
-                    character_lock,
-                    clip_seed,
-                    local_progress,
+                    prompt, plan, reference_image, negative_prompt, character_lock, clip_seed, local_progress
                 )
+                qc = self.generator.last_qc
+                if qc and qc.visual_failure and plan.profile.scene_retries:
+                    local_progress("Visual QC retrying opening part", 0.06)
+                    retry_seed = clip_seed if clip_seed < 0 else clip_seed + 100_003
+                    accepted = self._first_clip(
+                        prompt, plan, reference_image, negative_prompt, character_lock, retry_seed, local_progress
+                    )
             else:
                 tail = _aligned_tail(previous_tail, plan.profile.tail_frames)
                 overlap = max(0, len(tail) - 1)
                 render_frames = plan.clip_frames + overlap
-                accepted = None
+                accepted: Path
 
-                # Preferred path: official LTX multi-frame conditioning.
                 try:
                     raw = Path(
                         self.generator.generate_conditioned_video(
-                            prompt=prompt,
-                            negative_prompt=negative_prompt,
-                            width=plan.width,
-                            height=plan.height,
-                            num_frames=render_frames,
-                            num_inference_steps=plan.profile.inference_steps,
-                            guidance_scale=plan.profile.guidance_scale,
-                            seed=clip_seed,
-                            progress_callback=local_progress,
-                            character_lock=character_lock,
-                            fps=plan.profile.fps,
+                            **self._base_kwargs(
+                                prompt,
+                                plan,
+                                negative_prompt,
+                                character_lock,
+                                clip_seed,
+                                local_progress,
+                                frames=render_frames,
+                            ),
                             conditioning_frames=tail,
                             condition_strength=1.0,
                             image_cond_noise_scale=0.025,
@@ -401,33 +432,39 @@ class LongFormVideoGenerator:
                     else:
                         accepted = raw
                 except Exception as exc:
-                    # Compatibility fallback: never leave the customer with a
-                    # generic red Gradio error if condition mode is unavailable.
-                    # Use a stable frame from the motion tail to continue via I2V.
-                    local_progress(f"Multi-frame continuation fallback: {type(exc).__name__}", 0.08)
+                    local_progress(f"Using compatible continuation fallback ({type(exc).__name__})", 0.08)
                     if not tail:
                         raise RuntimeError(f"Continuation failed: {exc}") from exc
-                    anchor = tail[max(0, len(tail) - 5)]
-                    accepted = Path(
-                        self.generator.generate_image_to_video(
-                            prompt=prompt,
-                            image=anchor,
-                            negative_prompt=negative_prompt,
-                            width=plan.width,
-                            height=plan.height,
-                            num_frames=plan.clip_frames,
-                            num_inference_steps=plan.profile.inference_steps,
-                            guidance_scale=plan.profile.guidance_scale,
-                            seed=clip_seed,
-                            progress_callback=local_progress,
-                            character_lock=character_lock,
-                            fps=plan.profile.fps,
-                        )
+                    accepted = self._i2v_fallback(
+                        prompt,
+                        plan,
+                        tail[max(0, len(tail) - 5)],
+                        negative_prompt,
+                        character_lock,
+                        clip_seed,
+                        local_progress,
+                    )
+
+                qc = self.generator.last_qc
+                if qc and qc.visual_failure and plan.profile.scene_retries:
+                    local_progress("Visual QC retrying from a stable continuation frame", 0.06)
+                    retry_seed = clip_seed if clip_seed < 0 else clip_seed + 100_003
+                    accepted = self._i2v_fallback(
+                        prompt,
+                        plan,
+                        tail[max(0, len(tail) - 5)],
+                        negative_prompt,
+                        character_lock,
+                        retry_seed,
+                        local_progress,
                     )
 
             qc = self.generator.last_qc
-            if qc and qc.fatal:
-                raise RuntimeError(f"Part {index + 1} failed technical QC.\n{qc.summary()}")
+            if qc and (qc.fatal or qc.visual_failure):
+                raise RuntimeError(
+                    f"Part {index + 1} did not pass visual quality checks after retry.\n{qc.summary()}"
+                )
+
             clips.append(Path(accepted))
             if plan.generation_mode != "Single Clip" and index + 1 < total:
                 previous_tail = extract_tail_frames(
