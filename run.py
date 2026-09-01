@@ -30,7 +30,7 @@ def ensure_dependencies() -> None:
 
 
 def configure_hardware_profile():
-    """Apply GPU-specific budgets before app.py imports the generator constants."""
+    """Apply GPU-specific budgets before the selected UI imports the generator."""
     import config
     from engine.hardware_profiles import get_active_hardware_profile
 
@@ -68,9 +68,17 @@ def main() -> int:
         from download_models import download
 
         download()
-    from app import create_app
+
+    if "--legacy-ui" in sys.argv[1:]:
+        print("Launching legacy multi-studio UI (--legacy-ui).")
+        from app import create_app
+    else:
+        print("Launching Easy Video Creator. Use --legacy-ui for the old advanced studio.")
+        from easy_app import create_app
 
     app = create_app()
+    # One generation at a time is intentional on 4-6 GB VRAM GPUs.
+    app.queue(default_concurrency_limit=1, max_size=8)
     app.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True, show_error=True)
     return 0
 
