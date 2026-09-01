@@ -99,7 +99,7 @@ def trim_video_start_frames(
     cmd = [
         _ffmpeg_exe(), "-y", "-i", str(video_path),
         "-vf", vf, "-an",
-        "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+        "-c:v", "libx264", "-preset", "slow", "-crf", "14",
         "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output_path),
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -124,8 +124,8 @@ def concatenate_videos_streaming(
         cmd = [
             _ffmpeg_exe(), "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file),
             "-r", str(int(target_fps)),
-            "-c:v", "libx264", "-preset", "medium", "-crf", "16",
-            "-maxrate", "6M", "-bufsize", "12M",
+            "-c:v", "libx264", "-preset", "slow",
+            "-b:v", "4M", "-maxrate", "6M", "-bufsize", "12M",
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output_path),
         ]
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -141,7 +141,13 @@ def export_delivery(
     target_fps: int = 24,
     duration_seconds: float | None = None,
 ) -> Path:
-    """Create the customer delivery MP4 and optionally trim to exact duration."""
+    """Create the customer delivery MP4 and optionally trim to exact duration.
+
+    The previous CRF-only path could produce ~1 Mbps 720p files for simple
+    scenes. That is technically valid but unnecessarily throws away texture
+    after an expensive generation. Final delivery now targets ~4 Mbps with a
+    6 Mbps ceiling, close to the supplied 720p reference video's data rate.
+    """
     video_path, output_path = Path(video_path), Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -149,15 +155,17 @@ def export_delivery(
         f"scale={width}:{height}:flags=lanczos:force_original_aspect_ratio=decrease,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps={int(target_fps)}"
     )
-    vf_pipeline = f"{scale_filter},unsharp=5:5:0.35:5:5:0.0" if enhance_quality else scale_filter
+    # Keep sharpening light. Strong sharpening cannot recreate detail that was
+    # not generated and creates halos around stylized animation silhouettes.
+    vf_pipeline = f"{scale_filter},unsharp=5:5:0.22:5:5:0.0" if enhance_quality else scale_filter
 
     cmd = [_ffmpeg_exe(), "-y", "-i", str(video_path)]
     if duration_seconds is not None and float(duration_seconds) > 0:
         cmd.extend(["-t", f"{float(duration_seconds):.3f}"])
     cmd.extend([
         "-vf", vf_pipeline,
-        "-c:v", "libx264", "-preset", "slow", "-crf", "15",
-        "-maxrate", "6M", "-bufsize", "12M",
+        "-c:v", "libx264", "-preset", "slow",
+        "-b:v", "4M", "-maxrate", "6M", "-bufsize", "12M",
         "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output_path),
     ])
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
