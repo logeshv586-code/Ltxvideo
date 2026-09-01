@@ -1,10 +1,9 @@
-"""Automatic long-form scene planning and low-VRAM sequential generation.
+"""Personal video planning and low-VRAM sequential rendering.
 
-The customer supplies one paragraph. This module turns it into chronological
-shots and generates them one at a time. Continuation shots are conditioned on
-a short *sequence* of previous frames rather than one terminal still frame.
-That preserves motion direction and avoids the recursive blur/geometry drift
-seen in the earlier last-frame I2V implementation.
+The user describes the video once. The planner understands the requested total
+length and turns it into GPU-sized clips. RTX 4050 users can render one 4-second
+or 8-second clip directly; longer videos are generated clip-by-clip and joined
+while keeping story context and motion continuity.
 """
 from __future__ import annotations
 
@@ -18,15 +17,17 @@ from typing import Callable
 from PIL import Image
 
 from config import OUTPUTS_DIR
-from engine.video_processor import (
-    concatenate_videos_streaming,
-    extract_tail_frames,
-    trim_video_start_frames,
-)
+from engine.video_processor import concatenate_videos_streaming, extract_tail_frames, trim_video_start_frames
 
 Progress = Callable[[str, float], None] | None
 MAX_LONGFORM_SECONDS = 300
 MAX_LONGFORM_SCENES = 96
+
+GENERATION_MODES = ("Single Clip", "Continuous Video")
+CLIP_LENGTHS = {
+    "4 seconds • Recommended": 97,
+    "8 seconds • Max practical": 193,
+}
 
 
 @dataclass(frozen=True)
@@ -55,62 +56,44 @@ class RenderProfile:
             return self.square
         return self.landscape
 
-    @property
-    def continuation_overlap(self) -> int:
-        # 17 conditioning frames -> 16 overlap frames. The overlap remains a
-        # multiple of 8 so adding it to an 8k+1 LTX clip stays 8k+1.
-        return max(0, self.tail_frames - 1)
-
 
 QUALITY_PROFILES: dict[str, RenderProfile] = {
     "Fast": RenderProfile(
         key="fast",
-        label="Fast • draft/long-form • 24 fps",
+        label="Fast • fastest 720p delivery",
         landscape=(384, 224),
         portrait=(224, 384),
         square=(320, 320),
         frames_per_scene=97,
         inference_steps=12,
-        guidance_scale=3.0,
+        guidance_scale=3.5,
         delivery_long_edge=1280,
     ),
     "Balanced": RenderProfile(
         key="balanced",
-        label="Balanced • recommended safe RTX 4050 6 GB mode • 24 fps",
+        label="Balanced • recommended for RTX 4050 6 GB",
         landscape=(512, 288),
         portrait=(288, 512),
         square=(384, 384),
         frames_per_scene=97,
         inference_steps=16,
-        guidance_scale=3.0,
+        guidance_scale=4.0,
         delivery_long_edge=1280,
     ),
-    "Reference 720p": RenderProfile(
-        key="reference720",
-        label="Reference look • 576×320 native → clean 720p delivery • 24 fps",
+    "High": RenderProfile(
+        key="high",
+        label="High • best detail; 4-second clips recommended",
         landscape=(576, 320),
         portrait=(320, 576),
         square=(448, 448),
         frames_per_scene=97,
-        inference_steps=18,
-        guidance_scale=3.2,
-        delivery_long_edge=1280,
-    ),
-    "Quality": RenderProfile(
-        key="quality",
-        label="Quality • more native detail, slower • 24 fps",
-        landscape=(576, 320),
-        portrait=(320, 576),
-        square=(448, 448),
-        frames_per_scene=121,
         inference_steps=20,
-        guidance_scale=3.2,
+        guidance_scale=4.0,
         delivery_long_edge=1280,
     ),
 }
 
 DURATION_SECONDS = {
-    "Auto from story": None,
     "15 seconds": 15,
     "30 seconds": 30,
     "1 minute": 60,
@@ -121,31 +104,10 @@ DURATION_SECONDS = {
 }
 
 ASPECT_LABELS = {
-    "YouTube / Landscape (16:9)": "16:9",
-    "Instagram Reels / Shorts (9:16)": "9:16",
-    "Square Social (1:1)": "1:1",
+    "Landscape • 1280×720 • 16:9": "16:9",
+    "Portrait • 720×1280 • 9:16": "9:16",
+    "Square • 720×720 • 1:1": "1:1",
 }
-
-CAMERA_SEQUENCE = (
-    "wide establishing shot with subtle forward movement",
-    "stable medium tracking shot",
-    "medium close-up with a gentle push-in",
-    "side tracking shot with controlled parallax",
-    "close-up emphasizing the current action",
-    "wide continuation shot preserving screen direction",
-)
-
-CONTINUOUS_CAMERA_SEQUENCE = (
-    "stable cinematic tracking with the same screen direction",
-    "gentle forward tracking while preserving the same subject scale",
-    "subtle lateral tracking with continuous camera momentum",
-)
-
-SCENE_CHANGE_HINTS = re.compile(
-    r"\b(then|afterwards?|later|meanwhile|next|suddenly|cut to|cuts to|"
-    r"arrives?|enters?|leaves?|switches?|changes? to|another scene|finally)\b",
-    flags=re.IGNORECASE,
-)
 
 
 @dataclass(frozen=True)
@@ -159,94 +121,65 @@ class StoryPlan:
     height: int
     profile: RenderProfile
     continuity_mode: str
+    generation_mode: str = "Continuous Video"
+    clip_frames: int = 97
 
     @property
     def scene_count(self) -> int:
         return len(self.beats)
 
+    @property
+    def clip_seconds(self) -> float:
+        return self.clip_frames / self.profile.fps
 
-def _sentences(text: str) -> list[str]:
-    cleaned = re.sub(r"\s+", " ", text.strip())
-    if not cleaned:
+
+ACTION_SPLIT = re.compile(
+    r"\s*(?:\.|!|\?|;|\n|,\s*then\s+|\bthen\b|\band then\b|\bafter that\b|\bafterwards\b|\bnext\b|\bfinally\b)\s*",
+    flags=re.IGNORECASE,
+)
+
+
+def _clean(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip())
+
+
+def _action_units(story: str) -> list[str]:
+    text = _clean(story)
+    if not text:
         return []
-    raw = [part.strip(" -\t") for part in re.split(r"(?<=[.!?])\s+|\n+", cleaned) if part.strip()]
-    return raw or [cleaned]
+    parts = [p.strip(" ,.-") for p in ACTION_SPLIT.split(text) if p.strip(" ,.-")]
+    if len(parts) <= 1 and " and " in text.lower():
+        rough = re.split(r"\s+and\s+", text, flags=re.IGNORECASE)
+        parts = [p.strip(" ,.-") for p in rough if p.strip(" ,.-")]
+    return parts or [text]
 
 
-def _word_chunks(text: str, target_words: int = 11) -> list[str]:
-    words = text.split()
-    if len(words) <= max(15, target_words + 3):
-        return [text.strip()]
-    chunks: list[str] = []
-    cursor = 0
-    while cursor < len(words):
-        remaining = len(words) - cursor
-        take = min(max(8, target_words), remaining)
-        if remaining > target_words and remaining - take < 6:
-            take = remaining
-        chunk = " ".join(words[cursor: cursor + take]).strip()
-        if chunk:
-            chunks.append(chunk)
-        cursor += take
-    return chunks
+def _merge_units(units: list[str], count: int) -> list[str]:
+    if not units:
+        return ["Establish the requested subject and action clearly."] * count
+    if len(units) == count:
+        return units
+    if len(units) > count:
+        out: list[str] = []
+        for index in range(count):
+            start = round(index * len(units) / count)
+            end = round((index + 1) * len(units) / count)
+            out.append("; then ".join(units[start:end]))
+        return out
 
-
-def _atomic_units(story: str) -> list[str]:
-    units: list[str] = []
-    for sentence in _sentences(story):
-        clauses = [c.strip(" ,;:-") for c in re.split(r"(?<=[,;:])\s+", sentence) if c.strip(" ,;:-")]
-        if len(clauses) == 1:
-            units.extend(_word_chunks(sentence))
-        else:
-            for clause in clauses:
-                units.extend(_word_chunks(clause))
-    return [u for u in units if u]
-
-
-def _merge_to_count(units: list[str], count: int) -> list[str]:
-    if len(units) <= count:
-        return units[:]
-    result: list[str] = []
-    for index in range(count):
-        start = round(index * len(units) / count)
-        end = round((index + 1) * len(units) / count)
-        result.append(" ".join(units[start:end]).strip())
-    return [r for r in result if r]
-
-
-def _expand_to_count(units: list[str], count: int) -> list[str]:
-    work = units[:] or ["Establish the subject and begin the story clearly."]
-    while len(work) < count:
-        split_index = max(range(len(work)), key=lambda i: len(work[i].split()))
-        words = work[split_index].split()
-        if len(words) >= 10:
-            midpoint = len(words) // 2
-            first = " ".join(words[:midpoint]).strip()
-            second = " ".join(words[midpoint:]).strip()
-            work[split_index: split_index + 1] = [first, second]
-            continue
-        source = work[(len(work) - 1) % len(work)]
-        work.append(
-            "Continue naturally from the previous moment with a new visible movement or reaction while preserving this idea: "
-            + source
+    out = units[:]
+    while len(out) < count:
+        source = out[-1]
+        phase = len(out) + 1
+        out.append(
+            f"Continue naturally from the previous moment. Progress the same story and action further without restarting it; continuation phase {phase}: {source}"
         )
-    return work[:count]
-
-
-def _continuity_mode(story: str) -> str:
-    """Short single-action prompts become extensions instead of fake scene cuts."""
-    sentences = _sentences(story)
-    words = story.split()
-    if len(words) <= 45 and len(sentences) <= 2 and not SCENE_CHANGE_HINTS.search(story):
-        return "continuous"
-    return "storyboard"
+    return out[:count]
 
 
 def estimate_auto_seconds(story: str) -> int:
-    """Estimate watchable duration from paragraph length, capped at five minutes."""
     words = max(1, len(story.split()))
-    seconds = max(8, math.ceil(words / 2.5))
-    return min(MAX_LONGFORM_SECONDS, seconds)
+    return min(MAX_LONGFORM_SECONDS, max(8, math.ceil(words / 2.5)))
 
 
 def plan_story(
@@ -254,41 +187,44 @@ def plan_story(
     duration_label: str,
     quality_label: str,
     aspect_label: str,
+    generation_mode: str = "Continuous Video",
+    clip_length_label: str = "4 seconds • Recommended",
 ) -> StoryPlan:
-    if not story or not story.strip():
-        raise ValueError("Enter a story or video description first.")
+    """Create a customer-facing plan while keeping GPU chunking internal."""
+    story = _clean(story)
+    if not story:
+        raise ValueError("Describe what you want the video to show.")
+
     profile = QUALITY_PROFILES.get(quality_label, QUALITY_PROFILES["Balanced"])
     aspect = ASPECT_LABELS.get(aspect_label, "16:9")
     width, height = profile.size_for(aspect)
-    requested = DURATION_SECONDS.get(duration_label)
-    target_seconds = int(requested or estimate_auto_seconds(story))
-    target_seconds = max(4, min(MAX_LONGFORM_SECONDS, target_seconds))
-    scene_count = max(1, math.ceil(target_seconds / profile.scene_seconds))
-    scene_count = min(MAX_LONGFORM_SCENES, scene_count)
+    clip_frames = CLIP_LENGTHS.get(clip_length_label, 97)
+    clip_seconds = clip_frames / profile.fps
+    mode = generation_mode if generation_mode in GENERATION_MODES else "Continuous Video"
 
-    mode = _continuity_mode(story)
-    if mode == "continuous":
-        # Keep the semantic subject/action constant. The continuation pipeline
-        # supplies actual temporal evolution rather than prompting fresh scenes.
-        beats = [story.strip()] * scene_count
+    if mode == "Single Clip":
+        target_seconds = int(round(clip_seconds))
+        beats = [story]
+        continuity_mode = "single"
     else:
-        units = _atomic_units(story)
-        if len(units) > scene_count:
-            beats = _merge_to_count(units, scene_count)
-        else:
-            beats = _expand_to_count(units, scene_count)
+        target_seconds = int(DURATION_SECONDS.get(duration_label, 15))
+        target_seconds = max(15, min(MAX_LONGFORM_SECONDS, target_seconds))
+        count = min(MAX_LONGFORM_SCENES, max(1, math.ceil(target_seconds / clip_seconds)))
+        beats = _merge_units(_action_units(story), count)
+        continuity_mode = "continuous"
 
-    estimated = len(beats) * profile.scene_seconds
     return StoryPlan(
-        story=story.strip(),
+        story=story,
         beats=tuple(beats),
         target_seconds=target_seconds,
-        estimated_seconds=estimated,
+        estimated_seconds=len(beats) * clip_seconds,
         aspect=aspect,
         width=width,
         height=height,
         profile=profile,
-        continuity_mode=mode,
+        continuity_mode=continuity_mode,
+        generation_mode=mode,
+        clip_frames=clip_frames,
     )
 
 
@@ -298,62 +234,58 @@ def scene_prompt(
     total: int,
     style_prompt: str,
     character_lock: str,
-    continuity_mode: str = "storyboard",
+    continuity_mode: str = "continuous",
+    full_story: str = "",
 ) -> str:
-    if continuity_mode == "continuous":
-        continuity = (
-            "Opening shot: establish the subject, environment, colors and screen direction clearly."
-            if index == 0
-            else "Seamless extension of the same moving shot: do not restart the action, do not replace the subject, and preserve motion direction, camera momentum, identity, colors, lighting and geometry from the conditioned video tail."
-        )
-        camera = CONTINUOUS_CAMERA_SEQUENCE[index % len(CONTINUOUS_CAMERA_SEQUENCE)]
-        action = (
-            f"Chronological action: {beat}."
-            if index == 0
-            else f"Continue the same chronological action naturally without resetting: {beat}."
-        )
-    else:
-        continuity = (
-            "Opening shot: establish all important people, objects, colors and spatial relationships clearly."
-            if index == 0
-            else "Direct continuation of the previous story moment: preserve the same identities, clothing, object shapes, colors, lighting direction, screen direction and environment unless the story explicitly changes them."
-        )
-        camera = CAMERA_SEQUENCE[index % len(CAMERA_SEQUENCE)]
-        action = f"Chronological action: {beat}."
-
-    character = f" Identity and character lock: {character_lock}." if character_lock.strip() else ""
+    opening = index == 0
+    continuity = (
+        "Opening clip: establish all important subjects, their appearance, the environment and the intended action clearly."
+        if opening
+        else "Continue directly from the conditioned previous motion. Do not restart the story, replace the subject, change identity, teleport objects or reset camera direction."
+    )
+    character = f" Character/subject lock: {character_lock}." if character_lock.strip() else ""
+    context = f" Overall requested video: {full_story}." if full_story else ""
     return (
-        f"Scene {index + 1} of {total}. {continuity} "
-        f"{action} "
-        "Show readable poses and smooth purposeful motion. Preserve clean subject geometry and stable proportions throughout the shot."
-        f"{character} Visual treatment: {style_prompt}. Camera: {camera}. "
-        "Premium coherent animation, natural temporal motion, stable faces and anatomy, clean object geometry, crisp important details, no morphing, no flicker, no duplicate subject, no jump cut inside this shot."
+        f"Video clip {index + 1} of {total}. {continuity}{context} "
+        f"Current timeline action: {beat}. "
+        "Show a clear beginning, visible progression and readable end pose for this clip while the overall video continues forward. "
+        f"{character} Visual style: {style_prompt}. "
+        "Smooth purposeful motion, stable subject identity, coherent anatomy and object geometry, consistent colors and lighting, "
+        "cinematic composition, clean detail, no morphing, no duplicate subjects, no flicker, no sudden jump cut."
     )
 
 
-def plan_markdown(plan: StoryPlan, preview_limit: int = 12) -> str:
-    minutes = plan.estimated_seconds / 60.0
-    mode_label = "continuous motion extension" if plan.continuity_mode == "continuous" else "storyboard scenes"
+def plan_markdown(plan: StoryPlan, preview_limit: int = 8) -> str:
+    if plan.aspect == "9:16":
+        delivery = "720×1280"
+    elif plan.aspect == "1:1":
+        delivery = "720×720"
+    else:
+        delivery = "1280×720"
+
+    if plan.generation_mode == "Single Clip":
+        headline = f"**Single clip · {plan.clip_seconds:.1f} sec**"
+    else:
+        headline = f"**Continuous video · {plan.target_seconds} sec**"
+
     lines = [
-        "### Automatic video plan",
-        f"**{plan.scene_count} shots** · approximately **{plan.estimated_seconds:.0f} seconds ({minutes:.1f} min)** · **{mode_label}**",
-        (
-            f"Native generation: **{plan.width}×{plan.height}** · "
-            f"{plan.profile.frames_per_scene} new frames/shot · **{plan.profile.fps} fps** · {plan.profile.label}"
-        ),
-        f"Continuity: **{plan.profile.tail_frames}-frame motion tail** between related shots; failed visual tails retry before chaining.",
-        "",
+        "### Video setup",
+        headline,
+        f"**Quality:** {plan.profile.label}",
+        f"**Output:** {delivery} · {plan.profile.fps} fps · {plan.aspect}",
+        f"**RTX 4050 render chunks:** {plan.scene_count} × about {plan.clip_seconds:.1f} sec",
     ]
-    shown = min(plan.scene_count, preview_limit)
-    for index in range(shown):
-        lines.append(f"**Shot {index + 1}:** {plan.beats[index]}")
-    if plan.scene_count > shown:
-        lines.append(f"\n… plus **{plan.scene_count - shown} more automatically planned shots**.")
+    if plan.generation_mode != "Single Clip":
+        lines.append("The backend continues each clip from the previous clip automatically and trims the final delivery to the selected duration.")
+    lines.append("")
+    for i, beat in enumerate(plan.beats[:preview_limit]):
+        lines.append(f"**Part {i + 1}:** {beat}")
+    if len(plan.beats) > preview_limit:
+        lines.append(f"… plus **{len(plan.beats) - preview_limit} more continuation parts**.")
     return "\n\n".join(lines)
 
 
 def _aligned_tail(frames: list[Image.Image], preferred: int) -> list[Image.Image]:
-    """Choose a tail length whose overlap is divisible by eight."""
     if not frames:
         return []
     available = min(len(frames), max(1, int(preferred)))
@@ -362,10 +294,37 @@ def _aligned_tail(frames: list[Image.Image], preferred: int) -> list[Image.Image
 
 
 class LongFormVideoGenerator:
-    """Sequential long-form renderer designed for 6 GB-class GPUs."""
+    """Generate one clip or a continuous multi-clip video on a 6 GB GPU."""
 
     def __init__(self, generator) -> None:
         self.generator = generator
+
+    def _first_clip(
+        self,
+        prompt: str,
+        plan: StoryPlan,
+        reference_image: Image.Image | None,
+        negative_prompt: str,
+        character_lock: str,
+        seed: int,
+        callback: Progress,
+    ) -> Path:
+        kwargs = dict(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            width=plan.width,
+            height=plan.height,
+            num_frames=plan.clip_frames,
+            num_inference_steps=plan.profile.inference_steps,
+            guidance_scale=plan.profile.guidance_scale,
+            seed=seed,
+            progress_callback=callback,
+            character_lock=character_lock,
+            fps=plan.profile.fps,
+        )
+        if reference_image is not None:
+            return Path(self.generator.generate_image_to_video(image=reference_image, **kwargs))
+        return Path(self.generator.generate_text_to_video(**kwargs))
 
     def generate(
         self,
@@ -381,12 +340,6 @@ class LongFormVideoGenerator:
         previous_tail: list[Image.Image] = []
         total = plan.scene_count
 
-        if not hasattr(self.generator, "generate_conditioned_video"):
-            raise RuntimeError(
-                "This long-form build requires the multi-frame LTX condition pipeline. "
-                "Update the generator before rendering."
-            )
-
         for index, beat in enumerate(plan.beats):
             prompt = scene_prompt(
                 beat,
@@ -395,89 +348,100 @@ class LongFormVideoGenerator:
                 style_prompt,
                 character_lock,
                 continuity_mode=plan.continuity_mode,
+                full_story=plan.story,
             )
-            base_seed = -1 if seed is None or int(seed) < 0 else int(seed) + index * 17
-            tail = _aligned_tail(previous_tail, plan.profile.tail_frames)
-            overlap_frames = max(0, len(tail) - 1)
-            render_frames = plan.profile.frames_per_scene + overlap_frames
+            clip_seed = -1 if seed is None or int(seed) < 0 else int(seed) + index * 17
 
-            def scene_progress(message: str, value: float, idx: int = index) -> None:
+            def local_progress(message: str, value: float, idx: int = index) -> None:
                 if progress_callback:
-                    local = min(1.0, max(0.0, float(value)))
                     progress_callback(
-                        f"Shot {idx + 1}/{total}: {message}",
-                        (idx + local) / total,
+                        f"Part {idx + 1}/{total}: {message}",
+                        (idx + min(1.0, max(0.0, float(value)))) / total,
                     )
 
-            accepted: Path | None = None
-            attempts = 1 + max(0, int(plan.profile.scene_retries))
-            for attempt in range(attempts):
-                attempt_seed = base_seed
-                if attempt and base_seed >= 0:
-                    attempt_seed = base_seed + 100_003 * attempt
-
-                if attempt:
-                    scene_progress("visual QC requested a safer retry", 0.06)
-
-                raw_clip = self.generator.generate_conditioned_video(
-                    prompt=prompt,
-                    negative_prompt=negative_prompt,
-                    width=plan.width,
-                    height=plan.height,
-                    num_frames=render_frames,
-                    num_inference_steps=plan.profile.inference_steps,
-                    guidance_scale=plan.profile.guidance_scale,
-                    seed=attempt_seed,
-                    progress_callback=scene_progress,
-                    character_lock=character_lock,
-                    fps=plan.profile.fps,
-                    conditioning_frames=tail or None,
-                    reference_image=reference_image if index == 0 and not tail else None,
-                    condition_strength=1.0,
-                    image_cond_noise_scale=0.05 if attempt == 0 else 0.0,
+            if index == 0:
+                accepted = self._first_clip(
+                    prompt,
+                    plan,
+                    reference_image,
+                    negative_prompt,
+                    character_lock,
+                    clip_seed,
+                    local_progress,
                 )
+            else:
+                tail = _aligned_tail(previous_tail, plan.profile.tail_frames)
+                overlap = max(0, len(tail) - 1)
+                render_frames = plan.clip_frames + overlap
+                accepted = None
 
-                raw_path = Path(raw_clip)
-                qc = self.generator.last_qc
-                failed = bool(qc and (qc.fatal or qc.visual_failure))
-                if failed and attempt + 1 < attempts:
-                    continue
-                if failed:
-                    details = qc.summary() if qc else "Unknown scene quality failure."
-                    raise RuntimeError(
-                        f"Shot {index + 1} failed visual QC twice. The renderer stopped instead of "
-                        f"feeding a damaged tail into later shots.\n{details}"
+                # Preferred path: official LTX multi-frame conditioning.
+                try:
+                    raw = Path(
+                        self.generator.generate_conditioned_video(
+                            prompt=prompt,
+                            negative_prompt=negative_prompt,
+                            width=plan.width,
+                            height=plan.height,
+                            num_frames=render_frames,
+                            num_inference_steps=plan.profile.inference_steps,
+                            guidance_scale=plan.profile.guidance_scale,
+                            seed=clip_seed,
+                            progress_callback=local_progress,
+                            character_lock=character_lock,
+                            fps=plan.profile.fps,
+                            conditioning_frames=tail,
+                            condition_strength=1.0,
+                            image_cond_noise_scale=0.025,
+                        )
+                    )
+                    if overlap:
+                        accepted = raw.with_name(raw.stem + "_new.mp4")
+                        trim_video_start_frames(raw, accepted, overlap, target_fps=plan.profile.fps)
+                    else:
+                        accepted = raw
+                except Exception as exc:
+                    # Compatibility fallback: never leave the customer with a
+                    # generic red Gradio error if condition mode is unavailable.
+                    # Use a stable frame from the motion tail to continue via I2V.
+                    local_progress(f"Multi-frame continuation fallback: {type(exc).__name__}", 0.08)
+                    if not tail:
+                        raise RuntimeError(f"Continuation failed: {exc}") from exc
+                    anchor = tail[max(0, len(tail) - 5)]
+                    accepted = Path(
+                        self.generator.generate_image_to_video(
+                            prompt=prompt,
+                            image=anchor,
+                            negative_prompt=negative_prompt,
+                            width=plan.width,
+                            height=plan.height,
+                            num_frames=plan.clip_frames,
+                            num_inference_steps=plan.profile.inference_steps,
+                            guidance_scale=plan.profile.guidance_scale,
+                            seed=clip_seed,
+                            progress_callback=local_progress,
+                            character_lock=character_lock,
+                            fps=plan.profile.fps,
+                        )
                     )
 
-                if overlap_frames:
-                    segment = raw_path.with_name(raw_path.stem + "_new.mp4")
-                    trim_video_start_frames(
-                        raw_path,
-                        segment,
-                        frames_to_trim=overlap_frames,
-                        target_fps=plan.profile.fps,
-                    )
-                    accepted = segment
-                else:
-                    accepted = raw_path
-                break
-
-            if accepted is None:
-                raise RuntimeError(f"Shot {index + 1} did not produce an accepted clip.")
-
-            clips.append(accepted)
-            previous_tail = extract_tail_frames(
-                accepted,
-                frame_count=plan.profile.tail_frames,
-                safety_margin=1,
-            )
-            scene_progress("complete; motion tail captured", 1.0)
+            qc = self.generator.last_qc
+            if qc and qc.fatal:
+                raise RuntimeError(f"Part {index + 1} failed technical QC.\n{qc.summary()}")
+            clips.append(Path(accepted))
+            if plan.generation_mode != "Single Clip" and index + 1 < total:
+                previous_tail = extract_tail_frames(
+                    accepted,
+                    frame_count=plan.profile.tail_frames,
+                    safety_margin=1,
+                )
+            local_progress("complete", 1.0)
 
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output = OUTPUTS_DIR / f"longform_{stamp}.mp4"
+        output = OUTPUTS_DIR / f"video_{stamp}.mp4"
         if progress_callback:
-            progress_callback("Joining accepted shots into the final video", 0.995)
+            progress_callback("Joining generated parts", 0.995)
         concatenate_videos_streaming(clips, output, target_fps=plan.profile.fps)
         if progress_callback:
-            progress_callback("Long-form video complete", 1.0)
+            progress_callback("Video generation complete", 1.0)
         return output
