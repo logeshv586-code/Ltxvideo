@@ -1,4 +1,4 @@
-"""Low-memory video utilities for LTX Cartoon Studio."""
+"""Low-memory video utilities for LTX Video Creator."""
 from __future__ import annotations
 
 import shutil
@@ -11,6 +11,7 @@ from PIL import Image
 
 
 def extract_last_frame(video_path: str | Path) -> Image.Image:
+    """Compatibility helper for legacy single-frame continuation paths."""
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise ValueError(f"Cannot open video: {video_path}")
@@ -21,6 +22,46 @@ def extract_last_frame(video_path: str | Path) -> Image.Image:
     if not ok:
         raise ValueError(f"Cannot read last frame from: {video_path}")
     return Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
+
+def extract_tail_frames(
+    video_path: str | Path,
+    frame_count: int = 17,
+    safety_margin: int = 1,
+) -> list[Image.Image]:
+    """Return a contiguous motion-aware tail for video-conditioned continuation.
+
+    We intentionally avoid conditioning on only the final generated frame. A
+    short contiguous tail preserves subject motion, camera trajectory and pose
+    evolution. ``safety_margin`` skips the very last frame because diffusion
+    clips can occasionally contain a terminal decode artifact.
+    """
+    frame_count = max(1, int(frame_count))
+    safety_margin = max(0, int(safety_margin))
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise ValueError(f"Cannot open video: {video_path}")
+
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    if total <= 0:
+        cap.release()
+        raise ValueError(f"Video has no readable frames: {video_path}")
+
+    end_exclusive = max(1, total - safety_margin)
+    start = max(0, end_exclusive - frame_count)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+
+    frames: list[Image.Image] = []
+    for _ in range(start, end_exclusive):
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            break
+        frames.append(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
+    cap.release()
+
+    if not frames:
+        raise ValueError(f"Cannot extract continuation tail from: {video_path}")
+    return frames
 
 
 def get_video_info(video_path: str | Path) -> dict:
@@ -51,10 +92,36 @@ def _ffmpeg_exe() -> str:
         raise RuntimeError("FFmpeg is required. Install ffmpeg or imageio-ffmpeg.") from exc
 
 
-def concatenate_videos_streaming(
-    video_paths: list[str | Path], output_path: str | Path, target_fps: int = 30
+def trim_video_start_frames(
+    video_path: str | Path,
+    output_path: str | Path,
+    frames_to_trim: int,
+    target_fps: int = 24,
 ) -> Path:
-    """Concatenate clips without loading every frame into 16 GB system RAM."""
+    """Remove conditioning-overlap frames before a continuation clip is joined."""
+    video_path = Path(video_path).resolve()
+    output_path = Path(output_path).resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    frames_to_trim = max(0, int(frames_to_trim))
+    if frames_to_trim == 0:
+        shutil.copy2(video_path, output_path)
+        return output_path
+
+    vf = f"trim=start_frame={frames_to_trim},setpts=PTS-STARTPTS,fps={int(target_fps)}"
+    cmd = [
+        _ffmpeg_exe(), "-y", "-i", str(video_path),
+        "-vf", vf, "-an",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output_path),
+    ]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    return output_path
+
+
+def concatenate_videos_streaming(
+    video_paths: list[str | Path], output_path: str | Path, target_fps: int = 24
+) -> Path:
+    """Concatenate clips without loading every frame into system RAM."""
     paths = [Path(p).resolve() for p in video_paths]
     if not paths:
         raise ValueError("No videos to concatenate")
@@ -72,7 +139,9 @@ def concatenate_videos_streaming(
         )
         cmd = [
             _ffmpeg_exe(), "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file),
-            "-r", str(target_fps), "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+            "-r", str(int(target_fps)),
+            "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+            "-maxrate", "6M", "-bufsize", "12M",
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output_path),
         ]
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -85,24 +154,29 @@ def export_delivery(
     width: int,
     height: int,
     enhance_quality: bool = True,
+    target_fps: int = 24,
 ) -> Path:
-    """Create a high-quality delivery MP4 with Lanczos scaling and optional crisp edge filtering."""
+    """Create a clean social-delivery MP4 without pretending the upscale is native detail."""
     video_path, output_path = Path(video_path), Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    scale_filter = f"scale={width}:{height}:flags=lanczos:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+
+    scale_filter = (
+        f"scale={width}:{height}:flags=lanczos:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps={int(target_fps)}"
+    )
     if enhance_quality:
-        vf_pipeline = f"{scale_filter},unsharp=5:5:0.6:5:5:0.0"
+        # A light edge recovery filter avoids the crunchy halos produced by the
+        # older 0.6 sharpen strength while keeping stylized animation readable.
+        vf_pipeline = f"{scale_filter},unsharp=5:5:0.35:5:5:0.0"
     else:
         vf_pipeline = scale_filter
 
     cmd = [
         _ffmpeg_exe(), "-y", "-i", str(video_path),
         "-vf", vf_pipeline,
-        "-c:v", "libx264", "-preset", "slow", "-crf", "16",
-        "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart", str(output_path),
+        "-c:v", "libx264", "-preset", "slow", "-crf", "15",
+        "-maxrate", "6M", "-bufsize", "12M",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output_path),
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     return output_path
-
