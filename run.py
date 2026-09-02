@@ -30,7 +30,7 @@ def ensure_dependencies() -> None:
 
 
 def configure_hardware_profile():
-    """Apply GPU-specific budgets before the selected UI imports the generator."""
+    """Apply GPU-specific budgets before the selected UI imports the LTX generator."""
     import config
     from engine.hardware_profiles import get_active_hardware_profile
 
@@ -54,30 +54,37 @@ def configure_hardware_profile():
 
 
 def main() -> int:
-    if "--check" in sys.argv[1:]:
+    args = sys.argv[1:]
+    if "--check" in args:
         from diagnostics import main as diagnostics_main
 
         return diagnostics_main()
 
     ensure_dependencies()
-    configure_hardware_profile()
 
-    marker = ROOT / "models" / ".ltx_ready"
-    if not marker.exists():
-        print("LTX model cache not found. Preparing offline model files…")
-        from download_models import download
-
-        download()
-
-    if "--legacy-ui" in sys.argv[1:]:
-        print("Launching legacy multi-studio UI (--legacy-ui).")
-        from app import create_app
+    if "--hunyuan-ui" in args:
+        print("Launching Moon Cookie HunyuanVideo-1.5 studio for RTX 4080-class GPUs.")
+        print("If setup is incomplete, run: python setup_hunyuan.py --install-code --show-downloads")
+        from hunyuan_app import create_app
     else:
-        print("Launching Easy Video Creator. Use --legacy-ui for the old advanced studio.")
-        from easy_app import create_app
+        configure_hardware_profile()
+        marker = ROOT / "models" / ".ltx_ready"
+        if not marker.exists():
+            print("LTX model cache not found. Preparing offline model files…")
+            from download_models import download
+
+            download()
+
+        if "--legacy-ui" in args:
+            print("Launching legacy multi-studio UI (--legacy-ui).")
+            from app import create_app
+        else:
+            print("Launching Easy Video Creator. Use --legacy-ui for the old advanced studio.")
+            from easy_app import create_app
 
     app = create_app()
-    # One generation at a time is intentional on 4-6 GB VRAM GPUs.
+    # One generation at a time is intentional for consumer GPUs and prevents
+    # overlapping model loads from exhausting VRAM/system RAM.
     app.queue(default_concurrency_limit=1, max_size=8)
     app.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True, show_error=True)
     return 0
