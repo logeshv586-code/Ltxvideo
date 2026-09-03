@@ -4,214 +4,518 @@
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" />
-  <img alt="GPU" src="https://img.shields.io/badge/Target-RTX%204050-76B900?logo=nvidia&logoColor=white" />
+  <img alt="GPU" src="https://img.shields.io/badge/GPU-Adaptive%20NVIDIA-76B900?logo=nvidia&logoColor=white" />
+  <img alt="Multi GPU" src="https://img.shields.io/badge/Multi--GPU-Worker%20Pool-8B5CF6" />
+  <img alt="Server" src="https://img.shields.io/badge/Server-2%C3%97T4%20Ready-0EA5E9" />
   <img alt="Local" src="https://img.shields.io/badge/Generation-Local%20%2F%20Offline-06B6D4" />
   <img alt="License" src="https://img.shields.io/github/license/logeshv586-code/Ltxvideo" />
   <img alt="Stars" src="https://img.shields.io/github/stars/logeshv586-code/Ltxvideo?style=flat" />
-  <img alt="Issues" src="https://img.shields.io/github/issues/logeshv586-code/Ltxvideo" />
 </p>
 
 # LTX Video Director Studio
 
-**Local AI video generation for laptop-class NVIDIA GPUs.** Ltxvideo wraps Lightricks LTX-Video in a multi-studio Gradio workspace tuned around an **RTX 4050 6 GB VRAM + 16 GB RAM** target, with dedicated flows for text-to-video, image-to-video, action shots, comics, realistic scenes, and multi-scene cartoon continuity.
+**Adaptive local AI video generation for NVIDIA GPUs — from low-VRAM laptops to multi-GPU servers.**
 
-> **No paid cloud video-generation API is required after the first model download.** Model files are downloaded once and reused from the local cache.
+Ltxvideo wraps Lightricks LTX-Video in a Gradio-based video studio that automatically detects the machine it is running on and adjusts generation behavior from the available **GPU model, GPU count, VRAM per GPU and system RAM**.
 
-## What you can do
+The project supports text-to-video, image-to-video, continuous multi-scene generation, cartoons, action, realistic scenes and delivery exports while keeping generation memory-aware.
 
-| Workflow | What Ltxvideo adds |
+> **No paid cloud video-generation API is required after the first model download.** Model files are cached locally and reused on later runs.
+
+---
+
+## Highlights
+
+- **Automatic hardware detection** — GPU model, CUDA device count, per-GPU VRAM and system RAM.
+- **Adaptive native quality** — higher-VRAM GPUs automatically render at larger native sizes when safe.
+- **Multi-GPU worker pool** — multiple cards are used as independent generation workers.
+- **Dual NVIDIA T4 server support** — tested architecture for `2 × T4 16 GB` style deployments.
+- **Remote Gradio UI** — run generation on a Linux GPU server and control it from your own computer.
+- **Text → Video** and **Image → Video** generation.
+- **Continuous Video mode** — longer videos are generated part-by-part and joined automatically.
+- **Character / visual continuity support** using previous-scene conditioning.
+- **Automatic visual QC and retry path** for failed or unstable generated clips.
+- **720p / 1080p delivery exports** for landscape, portrait and square formats.
+- **Low-memory fallback profiles** for RTX 3050 / RTX 4050 class hardware.
+
+---
+
+## Adaptive hardware architecture
+
+Ltxvideo no longer assumes every machine is an RTX 4050.
+
+At startup it detects:
+
+```text
+GPU count
+   ↓
+GPU model for every device
+   ↓
+VRAM available on each GPU
+   ↓
+System RAM
+   ↓
+Hardware profile selection
+   ↓
+GPU / CPU memory budget
+   ↓
+Native quality scaling
+   ↓
+Generation worker count
+```
+
+Each physical GPU remains an independent device.
+
+For example:
+
+```text
+2 × NVIDIA T4 16 GB
+
+        ┌──────────────────┐
+        │ Gradio job queue │
+        └────────┬─────────┘
+                 │
+       ┌─────────┴─────────┐
+       │                   │
+       ▼                   ▼
+┌─────────────┐      ┌─────────────┐
+│ GPU Worker 0│      │ GPU Worker 1│
+│ T4 · 16 GB  │      │ T4 · 16 GB  │
+└──────┬──────┘      └──────┬──────┘
+       │                    │
+       ▼                    ▼
+ LTX pipeline          LTX pipeline
+       │                    │
+       ▼                    ▼
+ Video request A       Video request B
+```
+
+The two cards are **not treated as one fake 32 GB GPU**. Each render stays inside one GPU's VRAM limit, while separate requests can run concurrently.
+
+---
+
+## Hardware profiles
+
+The application chooses a conservative profile automatically.
+
+| Hardware | Typical behavior |
 |---|---|
-| **Text → Video** | Directed chronological prompts, camera/shot controls, low-memory presets |
-| **Image → Video** | Reference anchoring that focuses the prompt on motion and camera change |
-| **Action Studio** | Action intensity, choreography, trajectory and camera-stability constraints |
-| **Comics Studio** | Art-style, silhouette, line and costume continuity controls |
-| **Real-World Studio** | Physical realism, anatomy, materials and stable-camera guidance |
-| **Cartoon Story Studio** | Character bible, last-frame continuation, repeated style locking and FFmpeg scene stitching |
-| **Delivery exports** | Native MP4 plus 720p/1080p landscape, portrait and square delivery sizes |
+| 4 GB NVIDIA GPU | Low-VRAM safe profile, short clips and conservative resolution |
+| 6 GB RTX 3050 / RTX 4050 | Balanced low-memory generation with CPU offload |
+| 8–12 GB GPU | Increased native resolution when safe |
+| 16 GB GPU | Server-quality profile with larger native generation |
+| NVIDIA T4 16 GB | Dedicated T4 profile with roughly 14 GiB runtime GPU budget |
+| 20 GB+ GPU | Higher-quality adaptive profile with larger spatial limits |
+| Multiple GPUs | One persistent generation worker per visible GPU, up to configured limit |
 
-### Real RTX 4050 demo
+System RAM also changes the amount of memory available for CPU offload. Higher-RAM servers therefore receive a larger CPU memory budget automatically.
 
-A reproducible hardware demo is the next public-proof milestone. It is being tracked in **[Issue #7: Capture and publish the first real RTX 4050 demo reel](https://github.com/logeshv586-code/Ltxvideo/issues/7)**.
+---
 
-The project intentionally does **not** label cloud-generated footage as local RTX 4050 proof. The published demo should include the GPU name, prompt, seed, frame count, resolution and approximate generation time.
+# Quick start
 
-## Quick start
-
-### Windows PowerShell
+## Windows / local workstation
 
 ```powershell
 python -m venv venv
 venv\Scripts\activate
+pip install -r requirements.txt
 python run.py
 ```
 
-### Linux
-
-```bash
-python -m venv venv
-source venv/bin/activate
-python run.py
-```
-
-`run.py` checks the required runtime packages, prepares the local model cache when needed, and opens the UI at:
+Open:
 
 ```text
 http://127.0.0.1:7860
 ```
 
-The first model setup requires internet access. Later launches reuse the local cache.
+---
 
-## Safest first generation
+## Linux local workstation
 
-For a first GPU smoke test on the target hardware, start small:
-
-```text
-Resolution: 384×224
-Frames:     49
-Duration:   ~1.6 s at 30 FPS
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python run.py
 ```
 
-After that succeeds, the recommended everyday scene preset is **384×224 / 121 frames (~4 seconds)**.
+---
 
-## Creative Studios
+# Dual NVIDIA T4 server setup
 
-| Studio | Best for | Direction added by the UI |
-|---|---|---|
-| ✨ **General** | Free-form T2V / I2V | Raw prompt, optional image reference, shot controls |
-| 📚 **Comics** | Motion comics, manga, graphic-novel looks | Art-style and identity continuity, comic-specific negatives |
-| 🌍 **Real World** | Live action, products, travel, documentary | Physical realism, materials, anatomy and natural camera language |
-| ⚡ **Action** | Sports, chases, parkour, martial arts | Intensity, timing, choreography, momentum and trajectory constraints |
-| 🧸 **Cartoon Story** | Connected animated scenes | Character bible, style lock, last-frame continuation and scene stitching |
+For a server with **2 × NVIDIA T4 16 GB**, use the included server launcher.
 
-Every directed studio supports subject/action/environment guidance, style, framing, camera movement, lighting, continuity notes, negative prompts, seed/guidance/step controls and a **Director Prompt Preview**.
-
-## Prompt-director approach
-
-LTX generally responds better to a chronological shot description than a loose pile of tags. Ltxvideo compiles directed prompts in roughly this order:
-
-```text
-Reference anchor (when supplied)
-        ↓
-Subject + observable action
-        ↓
-Environment / spatial context
-        ↓
-Mode-specific visual direction
-        ↓
-Shot + one camera move
-        ↓
-Lighting / materials / continuity
-        ↓
-Optional dialogue / ambience
-        ↓
-Duration-aware motion constraint
-        ↓
-Stability / identity / physics anchors
+```bash
+git clone https://github.com/logeshv586-code/Ltxvideo.git
+cd Ltxvideo
+chmod +x server_start.sh
+./server_start.sh
 ```
 
-For short clips, keep the scene readable: **one main action beat + one camera move** is usually safer than trying to fit an entire sequence into one generation.
-
-## RTX 4050 memory strategy
-
-<p align="center">
-  <img src="docs/assets/hardware.svg" alt="RTX 4050 memory strategy" width="100%" />
-</p>
-
-The low-memory path uses the 2B LTX-Video Diffusers architecture with quantized transformer/text-encoder loading, GPU/CPU balancing, VAE tiling/slicing and short native clips so the application does not need to keep an entire long decoded movie in memory.
+The server UI listens on:
 
 ```text
-Studio / prompt / reference image
-              │
-              ▼
-      Video Skill Engine
-              │
-              ▼
-  8-bit text encoder ─────┐
-                          │ GPU/CPU placement
-  8-bit LTX transformer ──┤ RTX 4050 target
-                          │
-  tiled / sliced VAE ─────┘
-              │
-              ▼
-         native MP4
-              │
-       ┌──────┴──────┐
-       │             │
-   delivery       cartoon story
-    export        continuation
+http://0.0.0.0:7860
 ```
 
-## Duration and resolution guidance
+From your own computer, open:
 
-The UI exposes valid `8k+1` frame counts from **49 to 241 frames**. At 30 FPS that is about **1.6 to 8.0 seconds per native shot**.
+```text
+http://SERVER_IP:7860
+```
 
-| Goal | Resolution | Frames | Approx. duration | Notes |
-|---|---:|---:|---:|---|
-| First GPU test | 384×224 | 49 | 1.6 s | Safest smoke test |
-| Recommended scene | 384×224 | 121 | 4.0 s | Default starting point |
-| Better framing | 512×288 | 121 | 4.0 s | More memory pressure |
-| Longer shot | 384×224 | 193 | 6.4 s | Heavy |
-| Practical UI maximum | 384×224 | 241 | 8.0 s | Highest exposed native option |
+Before generation, verify the hardware:
 
-Longer content should be composed from multiple shots. Cartoon Story Studio automates that pattern for animation.
+```bash
+nvidia-smi
+python run.py --check
+```
 
-## Cartoon continuity workflow
+A two-T4 system should report approximately:
 
-<p align="center">
-  <img src="docs/assets/workflow.svg" alt="Cartoon story continuity workflow" width="100%" />
-</p>
+```text
+Hardware profile: NVIDIA T4 16 GB server profile
+GPU 0: Tesla T4 · ~15 GB VRAM
+GPU 1: Tesla T4 · ~15 GB VRAM
+System RAM: ... GB
+Adaptive GPU workers: 2
+```
 
-1. Write a full story or one scene beat per line.
-2. Define a **Character Bible** with face, colors, clothing, props and identifying details.
-3. Optionally upload a character/style reference for Scene 1.
-4. Generate Scene 1.
-5. Extract its last frame and use that as the visual reference for Scene 2.
-6. Re-inject the same character bible and visual style into every scene prompt.
-7. Repeat and join the short clips with FFmpeg.
+Full deployment notes are available in:
 
-This does not guarantee perfect identity preservation, but it gives the model a consistent visual anchor instead of restarting each scene from unrelated text.
+**[docs/T4_SERVER_SETUP.md](docs/T4_SERVER_SETUP.md)**
 
-## Export sizes
+---
 
-Native generation stays intentionally conservative. The delivery layer can output:
+## Server launch options
+
+### Normal server mode
+
+```bash
+python run.py --server
+```
+
+### Custom port
+
+```bash
+python run.py --server --port 8080
+```
+
+### Restrict generation to one GPU worker
+
+```bash
+LTX_MAX_GPU_WORKERS=1 python run.py --server
+```
+
+### Use two GPU workers
+
+```bash
+LTX_MAX_GPU_WORKERS=2 python run.py --server
+```
+
+### Override host
+
+```bash
+LTX_SERVER_NAME=0.0.0.0 python run.py --server
+```
+
+### Override memory budgets
+
+```bash
+LTX_GPU_MEMORY_BUDGET=13GiB \
+LTX_CPU_MEMORY_BUDGET=28GiB \
+python run.py --server
+```
+
+Normally these overrides are unnecessary because the application detects the hardware automatically.
+
+---
+
+# Video generation modes
+
+## Easy Video Creator
+
+The default interface is designed for normal video creation without requiring the user to understand diffusion settings.
+
+```bash
+python run.py
+```
+
+Available workflows include:
+
+- Single Clip
+- Continuous Video
+- Text-to-video
+- Image-to-video
+- Automatic style detection
+- 3D Animation
+- Clay Animation
+- Anime
+- Cinematic
+- Product Video
+
+---
+
+## Advanced / legacy studio
+
+```bash
+python run.py --legacy-ui
+```
+
+The advanced UI exposes dedicated creative studios:
+
+| Studio | Best for |
+|---|---|
+| ✨ General | Free-form T2V / I2V |
+| 📚 Comics | Motion comics, manga and graphic-novel visuals |
+| 🌍 Real World | Live action, products, travel and documentary scenes |
+| ⚡ Action | Sports, chases, parkour and martial arts |
+| 🧸 Cartoon Story | Connected animated scenes and character continuity |
+
+---
+
+# Adaptive video quality
+
+The UI still presents simple quality choices such as **Balanced** and **High**.
+
+The backend then adapts those requested dimensions to the available hardware.
+
+Example on a higher-VRAM server GPU:
+
+```text
+UI planned size
+576 × 320
+      │
+      ▼
+Hardware profile detected
+NVIDIA T4 · 16 GB
+      │
+      ▼
+Adaptive spatial scaling
+      │
+      ▼
+approximately 768 × 416 native render
+      │
+      ▼
+Final delivery export
+1280 × 720
+```
+
+The exact adaptive size can vary because the generator also enforces a maximum native pixel budget to protect VAE and attention memory peaks.
+
+Longer clips receive more conservative scaling than short clips because temporal generation consumes more memory.
+
+---
+
+## Recommended T4 quality settings
+
+For the **best quality / stability balance on a T4**, start with:
+
+```text
+Quality: High
+Backend clip length: 4 seconds
+Aspect: 16:9
+Mode: Single Clip or Continuous Video
+```
+
+For longer videos, prefer many short continuation clips instead of pushing one very long diffusion render.
+
+This gives the model more spatial detail while keeping motion and VRAM usage manageable.
+
+---
+
+# Continuous video generation
+
+Long-form output is generated sequentially rather than attempting to create minutes of video in one diffusion pass.
+
+```text
+Full story
+   │
+   ▼
+Story planner
+   │
+   ├── Scene 1
+   ├── Scene 2
+   ├── Scene 3
+   └── ...
+
+Scene 1 → generated clip
+              │
+              ▼
+        tail frames extracted
+              │
+              ▼
+Scene 2 → conditioned generation
+              │
+              ▼
+        tail frames extracted
+              │
+              ▼
+Scene 3 → conditioned generation
+              │
+              ▼
+             ...
+              │
+              ▼
+       FFmpeg concatenation
+              │
+              ▼
+         final video
+```
+
+This workflow helps preserve:
+
+- character identity
+- colors and clothing
+- camera direction
+- motion progression
+- environment continuity
+
+Perfect identity consistency is not guaranteed, but continuation conditioning is considerably more stable than restarting every scene from text only.
+
+---
+
+# Prompt-director approach
+
+LTX generally performs better with a chronological visual description rather than a large collection of unrelated prompt tags.
+
+Ltxvideo builds prompts approximately in this order:
+
+```text
+Reference anchor
+      ↓
+Subject
+      ↓
+Visible action
+      ↓
+Environment
+      ↓
+Style
+      ↓
+Shot framing
+      ↓
+Camera motion
+      ↓
+Lighting
+      ↓
+Continuity rules
+      ↓
+Stability / anatomy / physics constraints
+```
+
+For short clips, the safest approach remains:
+
+> **One important action + one understandable camera move per generated shot.**
+
+---
+
+# Quality control
+
+Generated clips pass through lightweight video QC.
+
+The system can detect problems such as:
+
+- unreadable or missing output
+- incorrect dimensions
+- incorrect duration
+- frozen / near-static results
+- severe visual instability
+- failed video encoding
+
+When a visual-quality failure is detected, the generation workflow can retry using another seed or a stable continuation frame.
+
+For CUDA out-of-memory errors, the worker:
+
+1. unloads its current pipeline,
+2. clears the cache for that GPU,
+3. reloads the model,
+4. retries once.
+
+---
+
+# Export sizes
+
+The delivery layer supports:
 
 - Native MP4
-- 1280×720
-- 1920×1080
-- 720×1280
-- 1080×1920
-- 1080×1080
+- 1280×720 landscape
+- 1920×1080 landscape
+- 720×1280 portrait
+- 1080×1920 portrait
+- 1080×1080 square
 
-The 720p/1080p choices are **FFmpeg delivery resizes**, not native 1080p diffusion and not AI super-resolution.
+Important: the delivery resolution and the diffusion generation resolution are different concepts.
 
-## Repository layout
+A 1080p export does **not** mean the diffusion model generated every frame natively at 1920×1080. The current delivery stage uses high-quality FFmpeg scaling and light sharpening.
+
+The adaptive server path improves quality primarily by increasing the **native generation size before export** when VRAM allows it.
+
+---
+
+# Repository layout
 
 ```text
 Ltxvideo/
-├── app.py
-├── run.py
+├── app.py                     # advanced studio UI
+├── easy_app.py                # simple customer-facing UI
+├── run.py                     # adaptive launcher
+├── server_start.sh            # Linux server bootstrap
 ├── config.py
+├── diagnostics.py
 ├── download_models.py
 ├── requirements.txt
+│
 ├── engine/
-│   ├── generator.py
+│   ├── generator.py           # core LTX generation
+│   ├── optimized_generator.py # adaptive multi-GPU worker pool
+│   ├── hardware_profiles.py   # GPU / VRAM / RAM profiles
+│   ├── longform.py            # continuous-video planner/generator
 │   ├── prompt_builders.py
 │   ├── skill_engine.py
 │   ├── storyboard.py
 │   ├── memory_manager.py
 │   ├── video_processor.py
 │   └── video_qc.py
-├── static/
+│
 ├── docs/
+│   └── T4_SERVER_SETUP.md
+│
 ├── tests/
+├── outputs/
+├── models/
 ├── CONTRIBUTING.md
 ├── LICENSE
 └── NOTICE
 ```
 
-## Testing
+---
 
-Run the lightweight tests without loading the video model:
+# Diagnostics
+
+Run:
+
+```bash
+python run.py --check
+```
+
+The diagnostic command does not load the full generation model. It checks the runtime environment and reports information such as:
+
+- Python version
+- PyTorch installation
+- CUDA availability
+- GPU model
+- VRAM
+- selected hardware profile
+- safe generation preset
+- FFmpeg
+- model cache status
+
+---
+
+# Testing
+
+Run the lightweight unit tests without loading the video model:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -220,43 +524,81 @@ python -m unittest discover -s tests -v
 Syntax check:
 
 ```bash
-python -m py_compile app.py config.py run.py download_models.py engine/*.py tests/*.py
+python -m py_compile app.py easy_app.py config.py run.py diagnostics.py download_models.py engine/*.py tests/*.py
 ```
 
-A full end-to-end generation test still requires a compatible NVIDIA CUDA GPU and downloaded model weights.
+A true end-to-end generation test requires a compatible NVIDIA CUDA GPU and the downloaded model weights.
 
-## Troubleshooting
+---
 
-**CUDA out of memory**  
-Close GPU-heavy applications, fall back to `384×224` and 49/97/121 frames, then restart the application to clear memory.
+# Troubleshooting
 
-**Windows becomes slow while loading**  
-Close browsers/games and make sure the Windows page file is enabled. Sixteen GB of system RAM is a tight environment for modern video diffusion.
+### CUDA out of memory
 
-**Action becomes chaotic**  
-Reduce the shot to one primary action beat and one camera move. Generate the next beat as a separate shot.
+Try, in order:
 
-**Reference-image identity drifts**  
-Describe what should move or change rather than re-describing the entire still image, keep continuity notes specific, and use a stable seed when comparing iterations.
+```text
+1. Use a 4-second backend clip.
+2. Change High → Balanced.
+3. Reduce LTX_MAX_GPU_WORKERS to 1 if system RAM is limited.
+4. Close other GPU workloads.
+5. Restart the generation worker/app.
+```
 
-## Contributing
+### Two GPUs detected but only one is being used
 
-Contributions are welcome. Start with **[CONTRIBUTING.md](CONTRIBUTING.md)** or pick one of the newcomer tasks:
+Check:
 
-- **[#4 — Windows RTX 4050 setup checklist](https://github.com/logeshv586-code/Ltxvideo/issues/4)**
-- **[#5 — Copy-ready example prompts](https://github.com/logeshv586-code/Ltxvideo/issues/5)**
-- **[#6 — Lightweight startup diagnostics](https://github.com/logeshv586-code/Ltxvideo/issues/6)**
+```bash
+nvidia-smi
+```
 
-All three are labeled `good first issue` and `help wanted`.
+Then ensure:
 
-## Model and upstream projects
+```bash
+LTX_MAX_GPU_WORKERS=2 python run.py --server
+```
+
+Two workers allow two separate generation jobs to execute concurrently. A single video render normally remains on one GPU.
+
+### Cannot open the server UI from another computer
+
+Run:
+
+```bash
+python run.py --server
+```
+
+Then verify that TCP port `7860` is allowed by the firewall/security group.
+
+Open:
+
+```text
+http://SERVER_IP:7860
+```
+
+For internet-facing deployments, place the application behind an authenticated reverse proxy, VPN or other access-control layer rather than exposing Gradio openly.
+
+### Action becomes chaotic
+
+Reduce the scene to one primary visible action and one camera movement. Put the next action in the next generated clip.
+
+### Reference-image identity drifts
+
+Describe what should **move or change** rather than repeatedly re-describing the entire reference image. Use explicit character-lock details and stable seeds while comparing generations.
+
+---
+
+# Model and upstream projects
 
 - [Lightricks/LTX-Video](https://github.com/Lightricks/LTX-Video)
 - [Lightricks/LTX-2](https://github.com/Lightricks/LTX-2)
 - [LTX-Video on Hugging Face](https://huggingface.co/Lightricks/LTX-Video)
 - [Hugging Face Diffusers LTX documentation](https://huggingface.co/docs/diffusers/api/pipelines/ltx_video)
 
-## License
+---
+
+# License
 
 The application code in this repository is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
@@ -264,4 +606,19 @@ LTX model weights, upstream model/runtime components and other third-party depen
 
 ---
 
-If this project helps you run local AI video on constrained hardware, consider **starring the repository** and sharing a reproducible generation result. Real hardware reports are especially useful to the project.
+## Current deployment target
+
+The current server-focused configuration is especially suited for:
+
+```text
+2 × NVIDIA T4 16 GB
+32–64+ GB system RAM
+Linux
+Python 3.10+
+CUDA-enabled PyTorch
+Remote browser UI
+```
+
+At the same time, the same codebase retains lower-memory profiles so development and testing can still run on smaller NVIDIA GPUs.
+
+If this project helps you run local AI video generation, consider **starring the repository** and sharing reproducible hardware results with the GPU model, VRAM, prompt, seed, native resolution, frame count and generation time.
