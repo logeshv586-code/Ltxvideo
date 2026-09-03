@@ -30,6 +30,15 @@ def _load_module(name: str) -> object:
     return __import__(name)
 
 
+def _system_ram_gb() -> float:
+    try:
+        import psutil
+
+        return psutil.virtual_memory().total / 1024**3
+    except Exception:
+        return 0.0
+
+
 def collect_diagnostics(*, loader: Loader = _load_module, marker: Path = MODEL_MARKER) -> list[CheckResult]:
     results: list[CheckResult] = []
 
@@ -41,6 +50,10 @@ def collect_diagnostics(*, loader: Loader = _load_module, marker: Path = MODEL_M
             f"{platform.python_version()} (requires 3.10+)",
         )
     )
+
+    ram_total_gb = _system_ram_gb()
+    if ram_total_gb > 0:
+        results.append(CheckResult("INFO", "System RAM", f"{ram_total_gb:.1f} GB"))
 
     torch_spec = importlib.util.find_spec("torch")
     if torch_spec is None:
@@ -54,24 +67,47 @@ def collect_diagnostics(*, loader: Loader = _load_module, marker: Path = MODEL_M
             cuda = getattr(torch, "cuda", None)
             cuda_available = bool(cuda and cuda.is_available())
             if cuda_available:
-                gpu_name = cuda.get_device_name(0)
-                props = cuda.get_device_properties(0)
-                vram_total_gb = props.total_memory / 1024**3
+                device_count_fn = getattr(cuda, "device_count", None)
+                device_count = int(device_count_fn()) if callable(device_count_fn) else 1
+                device_count = max(1, device_count)
                 cuda_version = getattr(getattr(torch, "version", None), "cuda", None) or "unknown"
-                results.append(CheckResult("PASS", "CUDA", f"{gpu_name} · {vram_total_gb:.1f} GB VRAM · CUDA {cuda_version}"))
-                profile = select_hardware_profile(gpu_name, vram_total_gb)
-                results.append(
-                    CheckResult(
-                        "PASS",
-                        "GPU profile",
-                        f"{profile.label} · GPU {profile.gpu_memory_budget} / CPU {profile.cpu_memory_budget}",
+
+                for index in range(device_count):
+                    gpu_name = cuda.get_device_name(index)
+                    props = cuda.get_device_properties(index)
+                    vram_total_gb = props.total_memory / 1024**3
+                    result_name = "CUDA" if index == 0 else f"CUDA GPU {index}"
+                    results.append(
+                        CheckResult(
+                            "PASS",
+                            result_name,
+                            f"GPU {index}: {gpu_name} · {vram_total_gb:.1f} GB VRAM · CUDA {cuda_version}",
+                        )
                     )
-                )
+
+                    profile = select_hardware_profile(gpu_name, vram_total_gb, ram_total_gb)
+                    profile_name = "GPU profile" if index == 0 else f"GPU {index} profile"
+                    results.append(
+                        CheckResult(
+                            "PASS",
+                            profile_name,
+                            f"{profile.label} · GPU {profile.gpu_memory_budget} / CPU {profile.cpu_memory_budget}",
+                        )
+                    )
+                    if index == 0:
+                        results.append(
+                            CheckResult(
+                                "INFO",
+                                "Safe preset",
+                                f"{profile.safe_width}x{profile.safe_height} · {profile.safe_frames} frames · native cap {profile.max_native_frames}",
+                            )
+                        )
+
                 results.append(
                     CheckResult(
                         "INFO",
-                        "Safe preset",
-                        f"{profile.safe_width}x{profile.safe_height} · {profile.safe_frames} frames · native cap {profile.max_native_frames}",
+                        "GPU workers",
+                        f"{device_count} visible CUDA GPU(s); Easy Video Creator can schedule up to {device_count} concurrent worker(s)",
                     )
                 )
             else:
