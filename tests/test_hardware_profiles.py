@@ -23,6 +23,22 @@ class HardwareProfileTests(TestCase):
         self.assertEqual(profile.gpu_memory_budget, "5GiB")
         self.assertEqual(profile.max_native_frames, 241)
 
+    def test_t4_16gb_uses_server_quality_profile(self) -> None:
+        profile = select_hardware_profile("Tesla T4", 15.0, 64.0)
+        self.assertEqual(profile.key, "t4-16gb")
+        self.assertEqual(profile.gpu_memory_budget, "14GiB")
+        self.assertEqual(profile.cpu_memory_budget, "32GiB")
+        self.assertEqual(profile.safe_preset, "512x288 · 97 frames")
+        self.assertGreater(profile.native_scale, 1.25)
+        self.assertGreater(profile.long_clip_scale, 1.0)
+        self.assertFalse(profile.attention_slicing)
+
+    def test_generic_16gb_gpu_gets_adaptive_scaling(self) -> None:
+        profile = select_hardware_profile("NVIDIA CUDA GPU", 16.0, 32.0)
+        self.assertEqual(profile.key, "generic-16gb")
+        self.assertEqual(profile.cpu_memory_budget, "18GiB")
+        self.assertGreater(profile.native_scale, 1.0)
+
     def test_generic_4gb_gpu_uses_safe_fallback(self) -> None:
         profile = select_hardware_profile("NVIDIA CUDA GPU", 4.0, 16.0)
         self.assertEqual(profile.key, "generic-4gb")
