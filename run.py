@@ -84,7 +84,7 @@ def main() -> int:
 
     ensure_dependencies()
     is_hunyuan = "--hunyuan-ui" in args
-    is_cogvideox = "--cogvideox-ui" in args
+    is_cogvideox = "--cogvideox-ui" in args or "--video-studio-ui" in args
     worker_count = 1
     app_theme = None
     app_css = None
@@ -95,8 +95,8 @@ def main() -> int:
         from hunyuan_app import create_app
     elif is_cogvideox:
         _, worker_count = configure_hardware_profile()
-        print("Launching CogVideoX-5B Quality Clip Studio with Moon Cookie Fox continuity.")
-        print("If setup is incomplete, run: python setup_cogvideox.py --download")
+        print("Launching Video Model Studio with CogVideoX, Wan2.1 and Moon Cookie Fox continuity.")
+        print("If setup is incomplete, run: python setup_cogvideox.py --download or python setup_wan.py --download")
         from cogvideox_app import CSS as app_css
         from cogvideox_app import THEME as app_theme
         from cogvideox_app import create_app

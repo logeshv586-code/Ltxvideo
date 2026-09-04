@@ -7,11 +7,18 @@ import gradio as gr
 
 from config import STATIC_DIR
 from easy_app import CSS, THEME
-from engine.audio_processor import add_audio_to_video, detect_voice_language, generate_speech, resolve_narration
+from engine.audio_processor import (
+    add_audio_to_video,
+    auto_narration_from_prompt,
+    detect_voice_language,
+    generate_speech,
+    resolve_narration,
+)
 from engine.cogvideox_generator import COGVIDEOX_FPS, COGVIDEOX_FRAMES, GENERATOR as COGVIDEOX
 from engine.longform import LongFormVideoGenerator, plan_story
 from engine.optimized_generator import OptimizedVideoGenerator
 from engine.video_processor import export_delivery
+from engine.wan_generator import GENERATOR as WAN
 
 FOX_CHARACTER = (
     "Moon Cookie Fox is a small, friendly orange fox child with large warm brown eyes, a cream muzzle and chest, "
@@ -30,6 +37,11 @@ FOX_STYLE = (
 FOX_REFERENCE = STATIC_DIR / "moon-cookie-fox-reference-v1.png"
 FOX_GENERATOR = OptimizedVideoGenerator()
 FOX_LONGFORM = LongFormVideoGenerator(FOX_GENERATOR)
+STORY_DURATIONS = {"15 seconds": 15, "30 seconds": 30, "1 minute": 60}
+VIDEO_MODELS = (
+    ("CogVideoX-5B — cinematic clips (slow T4-safe mode)", "cogvideox"),
+    ("Wan2.1-T2V-1.3B — kids' cartoons / 480p", "wan"),
+)
 
 
 def _attach_narration(video: Path, prompt: str, custom_text: str, voice_mode: str, language: str) -> tuple[Path, str]:
@@ -60,6 +72,123 @@ def generate_cog(prompt: str, seed: int | float, custom_voice: str, voice_mode: 
         return str(path), "\n".join(logs[-20:] + [voice_result, f"Done: {path.name}"])
     except Exception as exc:
         return None, "\n".join(logs[-20:] + [f"Stopped: {type(exc).__name__}: {exc}"])
+
+
+def generate_cog_story(
+    prompt: str,
+    duration: str,
+    seed: int | float,
+    custom_voice: str,
+    voice_mode: str,
+    language: str,
+    progress=gr.Progress(),
+):
+    """Render each chronological event, join the scenes, then narrate it."""
+    if not prompt or not prompt.strip():
+        return None, "Describe the chronological story first."
+    if detect_voice_language(prompt) == "Tamil":
+        return None, "CogVideoX-5B requires an English visual prompt. Tamil narration is still supported in Voice & narration."
+    seconds = STORY_DURATIONS.get(duration, 15)
+    logs: list[str] = []
+
+    def callback(message: str, value: float) -> None:
+        logs.append(message)
+        progress(value, desc=message)
+
+    try:
+        path, beats = COGVIDEOX.generate_story(prompt, seconds, seed, callback)
+        # Automatic narration covers the assembled story, not only its opening
+        # event. Custom narration remains authoritative when selected.
+        narration_prompt = prompt
+        if voice_mode == "Automatic from prompt":
+            narration = " ".join(auto_narration_from_prompt(beat, max_words=16) for beat in beats)
+            narration_prompt = f"Narration: {narration}"
+        path, voice_result = _attach_narration(path, narration_prompt, custom_voice, voice_mode, language)
+        scene_log = [f"Scene {index + 1}: {beat}" for index, beat in enumerate(beats)]
+        return str(path), "\n".join(scene_log + logs[-24:] + [voice_result, f"Done: {path.name}"])
+    except Exception as exc:
+        return None, "\n".join(logs[-24:] + [f"Stopped: {type(exc).__name__}: {exc}"])
+
+
+def generate_cog_request(
+    creation_mode: str,
+    prompt: str,
+    duration: str,
+    seed: int | float,
+    custom_voice: str,
+    voice_mode: str,
+    language: str,
+    progress=gr.Progress(),
+):
+    if creation_mode == "Story assembly":
+        return generate_cog_story(prompt, duration, seed, custom_voice, voice_mode, language, progress)
+    return generate_cog(prompt, seed, custom_voice, voice_mode, language, progress)
+
+
+def generate_wan(prompt: str, seed: int | float, custom_voice: str, voice_mode: str, language: str, progress=gr.Progress()):
+    if not prompt or not prompt.strip():
+        return None, "Describe the Wan2.1 clip first."
+    logs: list[str] = []
+
+    def callback(message: str, value: float) -> None:
+        logs.append(message)
+        progress(value, desc=message)
+
+    try:
+        path = WAN.generate(prompt, seed, callback)
+        path, voice_result = _attach_narration(path, prompt, custom_voice, voice_mode, language)
+        return str(path), "\n".join(logs[-20:] + [voice_result, f"Done: {path.name}"])
+    except Exception as exc:
+        return None, "\n".join(logs[-20:] + [f"Stopped: {type(exc).__name__}: {exc}"])
+
+
+def generate_wan_story(
+    prompt: str,
+    duration: str,
+    seed: int | float,
+    custom_voice: str,
+    voice_mode: str,
+    language: str,
+    progress=gr.Progress(),
+):
+    if not prompt or not prompt.strip():
+        return None, "Describe the chronological story first."
+    seconds = STORY_DURATIONS.get(duration, 15)
+    logs: list[str] = []
+
+    def callback(message: str, value: float) -> None:
+        logs.append(message)
+        progress(value, desc=message)
+
+    try:
+        path, beats = WAN.generate_story(prompt, seconds, seed, callback)
+        narration_prompt = prompt
+        if voice_mode == "Automatic from prompt":
+            narration = " ".join(auto_narration_from_prompt(beat, max_words=16) for beat in beats)
+            narration_prompt = f"Narration: {narration}"
+        path, voice_result = _attach_narration(path, narration_prompt, custom_voice, voice_mode, language)
+        scene_log = [f"Scene {index + 1}: {beat}" for index, beat in enumerate(beats)]
+        return str(path), "\n".join(scene_log + logs[-24:] + [voice_result, f"Done: {path.name}"])
+    except Exception as exc:
+        return None, "\n".join(logs[-24:] + [f"Stopped: {type(exc).__name__}: {exc}"])
+
+
+def generate_video_request(
+    model: str,
+    creation_mode: str,
+    prompt: str,
+    duration: str,
+    seed: int | float,
+    custom_voice: str,
+    voice_mode: str,
+    language: str,
+    progress=gr.Progress(),
+):
+    if model == "wan":
+        if creation_mode == "Story assembly":
+            return generate_wan_story(prompt, duration, seed, custom_voice, voice_mode, language, progress)
+        return generate_wan(prompt, seed, custom_voice, voice_mode, language, progress)
+    return generate_cog_request(creation_mode, prompt, duration, seed, custom_voice, voice_mode, language, progress)
 
 
 def generate_fox_story(
@@ -125,20 +254,29 @@ def create_app() -> gr.Blocks:
           <div class="steps"><span class="step active"><b>1</b> Choose engine</span><i class="step-line"></i><span class="step"><b>2</b> Create</span></div></header>
         """)
         with gr.Tabs():
-            with gr.Tab("CogVideoX-5B clips"):
-                ready, status = COGVIDEOX.readiness()
-                gr.Markdown(f"### CogVideoX-5B quality clip mode\n\n**Status:** {'Ready' if ready else 'Setup required'} — {status}\n\nWrite the **visual prompt in English**. Tamil and English narration remain available separately. This model renders **{COGVIDEOX_FRAMES} native frames at {COGVIDEOX_FPS} FPS** (about six seconds), then produces a 1080p YouTube delivery file. Each T4 receives an independent INT8-weight worker.")
+            with gr.Tab("Video models"):
+                cog_ready, cog_status = COGVIDEOX.readiness()
+                wan_ready, wan_status = WAN.readiness()
+                gr.Markdown("**Choose the engine for the job.** CogVideoX is a slower, higher-detail cinematic option. Wan2.1 1.3B is the practical cartoon option: it generates at stable native 480p before the app creates a 1080p delivery. LTX is available in the Moon Cookie Fox tab when real tail-frame continuity is more important.")
+                gr.Markdown(f"**CogVideoX status:** {'Ready' if cog_ready else 'Setup required'} — {cog_status}\n\n**Wan2.1 status:** {'Ready' if wan_ready else 'Setup required'} — {wan_status}\n\n**Story assembly:** write events in order using *then*, *after that*, or *finally*. Each scene is rendered separately, combined in that sequence, trimmed to the selected length, and given one final voice track.")
                 with gr.Row():
                     with gr.Column(scale=6, elem_classes=["creator-card"]):
-                        prompt = gr.Textbox(label="Describe one cinematic clip", lines=8, placeholder="A fox child walks through a moonlit garden, pauses beside a glowing cookie box, then smiles toward the camera. Cinematic medium shot, gentle dolly in.")
+                        model = gr.Radio(VIDEO_MODELS, value="cogvideox", label="Video model")
+                        creation_mode = gr.Radio(("Single quality clip", "Story assembly"), value="Single quality clip", label="Creation mode")
+                        prompt = gr.Textbox(label="Visual prompt / chronological story", lines=8, placeholder="A fox child enters a moonlit garden. Then she finds a glowing cookie box. Finally she opens it and smiles toward the camera. Cinematic medium shot, gentle dolly in.")
+                        story_duration = gr.Dropdown(tuple(STORY_DURATIONS), value="15 seconds", label="Final length (Story assembly)")
                         seed = gr.Number(value=-1, precision=0, label="Seed (-1 = random)")
                         with gr.Accordion("Voice & narration", open=False):
                             custom_voice, voice_mode, language = _voice_controls()
-                        generate = gr.Button("Generate CogVideoX 1080p clip", variant="primary", elem_classes=["generate-btn"])
+                        generate = gr.Button("Generate selected model", variant="primary", elem_classes=["generate-btn"])
                     with gr.Column(scale=5, elem_classes=["result-card"]):
-                        output = gr.Video(label="CogVideoX delivery", autoplay=True, height=420)
+                        output = gr.Video(label="Final 1080p delivery", autoplay=True, height=420)
                         log = gr.Textbox(label="Generation status", lines=14, interactive=False, elem_classes=["status-box"])
-                generate.click(generate_cog, [prompt, seed, custom_voice, voice_mode, language], [output, log])
+                generate.click(
+                    generate_video_request,
+                    [model, creation_mode, prompt, story_duration, seed, custom_voice, voice_mode, language],
+                    [output, log],
+                )
 
             with gr.Tab("Moon Cookie Fox continuity"):
                 gr.Markdown("### Persistent Fox story mode\n\nThis tab applies the same Fox character and garden world to every prompt. For a continuous video, LTX carries tail frames from each accepted shot into the next one. Upload an approved reference frame to lock the opening scene even more strongly.")
