@@ -1,6 +1,6 @@
 """Optional low-VRAM post-processing for Wan2.1 cartoon videos.
 
-The Wan generator stays at its stable 832x480 / 16 FPS native shape.  This
+The Wan generator stays at its stable 832x480 / 16 FPS native shape. This
 module improves delivery quality after diffusion has finished:
 
 1. RIFE interpolation (when ``rife-ncnn-vulkan`` is available) to 32 FPS.
@@ -10,7 +10,7 @@ module improves delivery quality after diffusion has finished:
 4. Lanczos + light sharpening in ``export_delivery`` when Real-ESRGAN is not
    installed.
 
-The NCNN/Vulkan executables are intentionally optional.  They do not add a
+The NCNN/Vulkan executables are intentionally optional. They do not add a
 second PyTorch model to the Wan CUDA process, which is important on a 6 GB RTX
 4050 laptop.
 """
@@ -75,8 +75,14 @@ def enhancement_status() -> dict[str, str]:
 
 
 def _run(cmd: list[str], label: str) -> None:
+    # NCNN release bundles keep their model folders beside the executable.
+    # Running from that directory means their default relative model paths work
+    # even when Ltxvideo itself was launched from another folder.
+    executable = Path(cmd[0]).expanduser()
+    cwd = str(executable.resolve().parent) if executable.exists() else None
     completed = subprocess.run(
         cmd,
+        cwd=cwd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
@@ -98,6 +104,8 @@ def _extract_frames(video_path: str | Path, frame_dir: Path) -> list[Path]:
             "-i",
             str(Path(video_path).resolve()),
             "-vsync",
+            "0",
+            "-start_number",
             "0",
             str(pattern),
         ],
@@ -145,9 +153,10 @@ def interpolate_with_rife(
     output_path: str | Path,
     target_fps: int,
     executable: str | None = None,
+    gpu_id: int = 0,
     callback: StatusCallback = None,
 ) -> Path:
-    """Create one RIFE midpoint between every pair of source frames."""
+    """Interpolate the whole frame directory with the portable RIFE binary."""
     exe = executable or find_rife_executable()
     if not exe:
         raise RuntimeError("rife-ncnn-vulkan was not found")
@@ -169,20 +178,27 @@ def interpolate_with_rife(
         if len(frames) < 2:
             raise RuntimeError("RIFE needs at least two source frames")
 
-        total_pairs = len(frames) - 1
-        for index in range(total_pairs):
-            current = frames[index]
-            following = frames[index + 1]
-            shutil.copy2(current, smooth_dir / f"{index * 2:08d}.png")
-            midpoint = smooth_dir / f"{index * 2 + 1:08d}.png"
-            _run(
-                [exe, "-0", str(current), "-1", str(following), "-o", str(midpoint)],
-                f"RIFE frame {index + 1}/{total_pairs}",
-            )
-            if index == 0 or (index + 1) % 20 == 0 or index + 1 == total_pairs:
-                _status(callback, f"RIFE smoothing {index + 1}/{total_pairs} frame pairs")
-
-        shutil.copy2(frames[-1], smooth_dir / f"{(len(frames) - 1) * 2:08d}.png")
+        _status(callback, f"RIFE processing {len(frames)} source frames in one batch")
+        _run(
+            [
+                exe,
+                "-i",
+                str(source_dir),
+                "-o",
+                str(smooth_dir),
+                "-n",
+                str(len(frames) * 2),
+                "-g",
+                str(int(gpu_id)),
+                "-f",
+                "%08d.png",
+            ],
+            "RIFE frame interpolation",
+        )
+        output_frames = sorted(smooth_dir.glob("*.png"))
+        if len(output_frames) < len(frames):
+            raise RuntimeError("RIFE did not produce the expected output frame sequence")
+        _status(callback, f"RIFE created {len(output_frames)} smooth frames")
         return _encode_frames(smooth_dir, output_path, float(target_fps))
 
 
@@ -234,7 +250,7 @@ def upscale_with_realesrgan(
     gpu_id: int = 0,
     callback: StatusCallback = None,
 ) -> Path:
-    """Upscale frames with the lightweight Real-ESRGAN NCNN/Vulkan binary."""
+    """Upscale a video frame directory with Real-ESRGAN NCNN/Vulkan."""
     exe = executable or find_realesrgan_executable()
     if not exe:
         raise RuntimeError("realesrgan-ncnn-vulkan was not found")
@@ -252,31 +268,32 @@ def upscale_with_realesrgan(
         upscale_dir = root / "upscale"
         upscale_dir.mkdir(parents=True, exist_ok=True)
         frames = _extract_frames(video_path, source_dir)
-        total = len(frames)
 
-        for index, frame in enumerate(frames):
-            out_frame = upscale_dir / f"{index:08d}.png"
-            cmd = [
-                exe,
-                "-i",
-                str(frame),
-                "-o",
-                str(out_frame),
-                "-n",
-                model,
-                "-s",
-                str(scale),
-                "-f",
-                "png",
-                "-g",
-                str(int(gpu_id)),
-            ]
-            if tile > 0:
-                cmd.extend(["-t", str(tile)])
-            _run(cmd, f"Real-ESRGAN frame {index + 1}/{total}")
-            if index == 0 or (index + 1) % 20 == 0 or index + 1 == total:
-                _status(callback, f"Real-ESRGAN upscaling {index + 1}/{total} frames")
-
+        cmd = [
+            exe,
+            "-i",
+            str(source_dir),
+            "-o",
+            str(upscale_dir),
+            "-n",
+            model,
+            "-s",
+            str(scale),
+            "-f",
+            "png",
+            "-g",
+            str(int(gpu_id)),
+        ]
+        if tile > 0:
+            cmd.extend(["-t", str(tile)])
+        _status(callback, f"Real-ESRGAN processing {len(frames)} frames in one batch")
+        _run(cmd, "Real-ESRGAN video upscaling")
+        output_frames = sorted(upscale_dir.glob("*.png"))
+        if len(output_frames) != len(frames):
+            raise RuntimeError(
+                f"Real-ESRGAN returned {len(output_frames)} frames for {len(frames)} inputs"
+            )
+        _status(callback, f"Real-ESRGAN enhanced {len(output_frames)} frames")
         return _encode_frames(upscale_dir, output_path, source_fps)
 
 
@@ -324,7 +341,14 @@ def enhance_wan_delivery(
             if smoothing in {"auto", "rife"} and rife:
                 try:
                     _status(callback, f"Smoothing Wan motion with RIFE: {native_fps} → {target_fps} FPS")
-                    interpolate_with_rife(current, smoothed, target_fps, executable=rife, callback=callback)
+                    interpolate_with_rife(
+                        current,
+                        smoothed,
+                        target_fps,
+                        executable=rife,
+                        gpu_id=gpu_id,
+                        callback=callback,
+                    )
                     current = smoothed
                     actual_fps = int(target_fps)
                     used_rife = True
