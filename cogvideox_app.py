@@ -37,11 +37,31 @@ FOX_STYLE = (
 FOX_REFERENCE = STATIC_DIR / "moon-cookie-fox-reference-v1.png"
 FOX_GENERATOR = OptimizedVideoGenerator()
 FOX_LONGFORM = LongFormVideoGenerator(FOX_GENERATOR)
-STORY_DURATIONS = {"15 seconds": 15, "30 seconds": 30, "1 minute": 60}
+STORY_DURATIONS = {
+    "15 seconds": 15,
+    "30 seconds": 30,
+    "1 minute": 60,
+    "5 minutes": 300,
+    "10 minutes": 600,
+}
 VIDEO_MODELS = (
+    ("LTX-Video — continuous stories / reference-free (T4-safe)", "ltx"),
     ("CogVideoX-5B — cinematic clips (slow T4-safe mode)", "cogvideox"),
     ("Wan2.1-T2V-1.3B — kids' cartoons / 480p", "wan"),
 )
+
+
+def update_creation_mode(creation_mode: str):
+    """Avoid implying the fixed-duration clip model obeys story length."""
+    if creation_mode == "Story assembly":
+        return (
+            gr.update(visible=True),
+            "**Story assembly enabled:** scenes are rendered separately, then joined and trimmed to the selected final length. Long videos can take many hours.",
+        )
+    return (
+        gr.update(visible=False),
+        "**Single quality clip:** duration is fixed by the selected model (about 4 seconds for LTX, 5 seconds for Wan, and 6 seconds for CogVideoX). Select **Story assembly** to use 15 seconds through 10 minutes.",
+    )
 
 
 def _attach_narration(video: Path, prompt: str, custom_text: str, voice_mode: str, language: str) -> tuple[Path, str]:
@@ -173,6 +193,60 @@ def generate_wan_story(
         return None, "\n".join(logs[-24:] + [f"Stopped: {type(exc).__name__}: {exc}"])
 
 
+def generate_ltx_request(
+    creation_mode: str,
+    prompt: str,
+    duration: str,
+    seed: int | float,
+    custom_voice: str,
+    voice_mode: str,
+    language: str,
+    progress=gr.Progress(),
+):
+    """Use LTX when the user prefers connected, T4-safe story generation."""
+    if not prompt or not prompt.strip():
+        return None, "Describe the LTX video first."
+    mode = "Continuous Video" if creation_mode == "Story assembly" else "Single Clip"
+    plan = plan_story(
+        prompt,
+        duration,
+        "High",
+        "Landscape • 1280×720 • 16:9",
+        generation_mode=mode,
+        clip_length_label="4 seconds • Recommended",
+    )
+    logs: list[str] = []
+
+    def callback(message: str, value: float) -> None:
+        logs.append(message)
+        progress(value, desc=message)
+
+    try:
+        raw = FOX_LONGFORM.generate(
+            plan=plan,
+            style_prompt="cinematic, coherent motion, clean detail",
+            character_lock="",
+            reference_image=None,
+            negative_prompt="flicker, morphing, duplicate subjects, extra limbs, blurry, text, watermark",
+            seed=int(seed),
+            progress_callback=callback,
+        )
+        delivery = raw.with_name(raw.stem + "_ltx_1080p.mp4")
+        export_delivery(
+            raw,
+            delivery,
+            1920,
+            1080,
+            enhance_quality=True,
+            target_fps=plan.profile.fps,
+            duration_seconds=plan.target_seconds,
+        )
+        delivery, voice_result = _attach_narration(delivery, prompt, custom_voice, voice_mode, language)
+        return str(delivery), "\n".join(logs[-24:] + [voice_result, f"Done: {delivery.name}"])
+    except Exception as exc:
+        return None, "\n".join(logs[-24:] + [f"Stopped: {type(exc).__name__}: {exc}"])
+
+
 def generate_video_request(
     model: str,
     creation_mode: str,
@@ -184,6 +258,8 @@ def generate_video_request(
     language: str,
     progress=gr.Progress(),
 ):
+    if model == "ltx":
+        return generate_ltx_request(creation_mode, prompt, duration, seed, custom_voice, voice_mode, language, progress)
     if model == "wan":
         if creation_mode == "Story assembly":
             return generate_wan_story(prompt, duration, seed, custom_voice, voice_mode, language, progress)
@@ -257,14 +333,22 @@ def create_app() -> gr.Blocks:
             with gr.Tab("Video models"):
                 cog_ready, cog_status = COGVIDEOX.readiness()
                 wan_ready, wan_status = WAN.readiness()
-                gr.Markdown("**Choose the engine for the job.** CogVideoX is a slower, higher-detail cinematic option. Wan2.1 1.3B is the practical cartoon option: it generates at stable native 480p before the app creates a 1080p delivery. LTX is available in the Moon Cookie Fox tab when real tail-frame continuity is more important.")
+                gr.Markdown("**Choose the engine for the job.** LTX-Video is the T4-safe choice for connected multi-part stories. CogVideoX is slower and optimized for higher-detail independent cinematic clips. Wan2.1 1.3B is the practical 480p cartoon option before 1080p delivery export.")
                 gr.Markdown(f"**CogVideoX status:** {'Ready' if cog_ready else 'Setup required'} — {cog_status}\n\n**Wan2.1 status:** {'Ready' if wan_ready else 'Setup required'} — {wan_status}\n\n**Story assembly:** write events in order using *then*, *after that*, or *finally*. Each scene is rendered separately, combined in that sequence, trimmed to the selected length, and given one final voice track.")
                 with gr.Row():
                     with gr.Column(scale=6, elem_classes=["creator-card"]):
                         model = gr.Radio(VIDEO_MODELS, value="cogvideox", label="Video model")
                         creation_mode = gr.Radio(("Single quality clip", "Story assembly"), value="Single quality clip", label="Creation mode")
                         prompt = gr.Textbox(label="Visual prompt / chronological story", lines=8, placeholder="A fox child enters a moonlit garden. Then she finds a glowing cookie box. Finally she opens it and smiles toward the camera. Cinematic medium shot, gentle dolly in.")
-                        story_duration = gr.Dropdown(tuple(STORY_DURATIONS), value="15 seconds", label="Final length (Story assembly)")
+                        story_duration = gr.Dropdown(
+                            tuple(STORY_DURATIONS),
+                            value="15 seconds",
+                            label="Final length (Story assembly)",
+                            visible=False,
+                        )
+                        duration_note = gr.Markdown(
+                            "**Single quality clip:** duration is fixed by the selected model (about 4 seconds for LTX, 5 seconds for Wan, and 6 seconds for CogVideoX). Select **Story assembly** to use 15 seconds through 10 minutes."
+                        )
                         seed = gr.Number(value=-1, precision=0, label="Seed (-1 = random)")
                         with gr.Accordion("Voice & narration", open=False):
                             custom_voice, voice_mode, language = _voice_controls()
@@ -277,13 +361,14 @@ def create_app() -> gr.Blocks:
                     [model, creation_mode, prompt, story_duration, seed, custom_voice, voice_mode, language],
                     [output, log],
                 )
+                creation_mode.change(update_creation_mode, creation_mode, [story_duration, duration_note])
 
             with gr.Tab("Moon Cookie Fox continuity"):
                 gr.Markdown("### Persistent Fox story mode\n\nThis tab applies the same Fox character and garden world to every prompt. For a continuous video, LTX carries tail frames from each accepted shot into the next one. Upload an approved reference frame to lock the opening scene even more strongly.")
                 with gr.Row():
                     with gr.Column(scale=6, elem_classes=["creator-card"]):
                         action = gr.Textbox(label="What happens next?", lines=4, placeholder="The Fox carefully opens a glowing cookie box, sees a tiny moon inside, and smiles toward the clock tower.")
-                        duration = gr.Dropdown(("15 seconds", "30 seconds", "1 minute"), value="15 seconds", label="Continuous story duration")
+                        duration = gr.Dropdown(tuple(STORY_DURATIONS), value="15 seconds", label="Continuous story duration")
                         reference = gr.Image(
                             value=str(FOX_REFERENCE) if FOX_REFERENCE.exists() else None,
                             type="pil",

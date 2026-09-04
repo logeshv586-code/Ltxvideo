@@ -331,7 +331,7 @@ class WanVideoGenerator:
         seed: int | float = -1,
         callback: Progress = None,
     ) -> tuple[Path, tuple[str, ...]]:
-        beats = build_story_sequence(story, target_seconds)
+        beats = build_story_sequence(story, target_seconds, clip_seconds=WAN_CLIP_SECONDS)
         clips: list[Path] = []
         context = " ".join(story.split())[:700]
         total = len(beats)

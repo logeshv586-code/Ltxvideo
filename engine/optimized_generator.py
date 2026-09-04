@@ -115,7 +115,14 @@ class _OptimizedWorker(VideoGenerator):
         # The planner already supplies dimensions divisible by 32.
         return new_w, new_h
 
-    def _adapt_kwargs(self, kwargs: dict) -> dict:
+    def _adapt_kwargs(self, kwargs: dict, mode: str) -> dict:
+        # Image animation and tail-frame conditioning retain the planner's
+        # conservative dimensions. On a T4 their VAE/condition tensors peak
+        # much higher than text-only inference; 768x416 triggered the reported
+        # continuation failure.
+        allow_native_upscale = bool(kwargs.pop("_adaptive_native_upscale", True))
+        if mode != "t2v" or not allow_native_upscale:
+            return kwargs
         if "width" not in kwargs or "height" not in kwargs or "num_frames" not in kwargs:
             return kwargs
         width = int(kwargs["width"])
@@ -135,17 +142,17 @@ class _OptimizedWorker(VideoGenerator):
         return kwargs
 
     def generate_text_to_video(self, *args, **kwargs):
-        kwargs = self._adapt_kwargs(kwargs)
+        kwargs = self._adapt_kwargs(kwargs, "t2v")
         with self._device_context():
             return super().generate_text_to_video(*args, **kwargs)
 
     def generate_image_to_video(self, *args, **kwargs):
-        kwargs = self._adapt_kwargs(kwargs)
+        kwargs = self._adapt_kwargs(kwargs, "i2v")
         with self._device_context():
             return super().generate_image_to_video(*args, **kwargs)
 
     def generate_conditioned_video(self, *args, **kwargs):
-        kwargs = self._adapt_kwargs(kwargs)
+        kwargs = self._adapt_kwargs(kwargs, "condition")
         with self._device_context():
             return super().generate_conditioned_video(*args, **kwargs)
 

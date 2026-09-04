@@ -11,7 +11,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Iterable
 
-MAX_LTX_PROMPT_WORDS = 200
+# The bundled T5 encoder is limited to 128 tokens. Words are not tokens, so
+# keep a material margin for punctuation and character names.
+MAX_LTX_PROMPT_WORDS = 80
 
 CAMERA_WORDS = (
     "camera", "dolly", "pan ", "panning", "tilt", "orbit", "zoom", "handheld",
@@ -215,9 +217,9 @@ class VideoSkillEngine:
         raw_words = raw.split()
         if len(raw_words) >= MAX_LTX_PROMPT_WORDS:
             warnings.append(
-                "The user's original prompt is already at or above the LTX 200-word guidance, so skill additions were not appended."
+                "The prompt was shortened to fit LTX's 128-token text-encoder limit."
             )
-            return raw
+            return " ".join(raw_words[:MAX_LTX_PROMPT_WORDS])
 
         result = raw
         for addition in additions:

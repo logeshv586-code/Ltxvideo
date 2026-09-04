@@ -41,6 +41,10 @@ class CogVideoXGeneratorTests(unittest.TestCase):
         self.assertEqual(len(beats), 3)
         self.assertIn("Continue naturally", beats[1])
 
+    def test_story_sequence_respects_the_selected_model_clip_length(self):
+        beats = build_story_sequence("A Fox walks through the garden.", 15, clip_seconds=5.0625)
+        self.assertEqual(len(beats), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -147,9 +147,10 @@ class PersonalVideoPlannerTests(unittest.TestCase):
         )
         self.assertIn("Continue directly", prompt)
         self.assertIn("orange", prompt)
-        self.assertIn("Concise overall context", prompt)
+        self.assertNotIn("Concise overall context", prompt)
         self.assertIn("cookie", prompt)
         self.assertIn("slow tracking", prompt)
+        self.assertLessEqual(len(prompt.split()), 90)
 
 
 if __name__ == "__main__":

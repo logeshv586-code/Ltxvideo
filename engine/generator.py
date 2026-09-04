@@ -29,6 +29,25 @@ from engine.video_qc import VideoQCReport, inspect_video
 Progress = Callable[[str, float], None] | None
 
 
+def is_fatal_cuda_error(exc: BaseException) -> bool:
+    """Whether CUDA can no longer safely run another inference in this process.
+
+    Error 700 is different from an out-of-memory condition. CUDA marks the
+    device context as sticky after an illegal address, so cache clearing or an
+    image-to-video fallback can merely report the same failure later.
+    """
+    message = str(exc).lower()
+    markers = (
+        "cudaerrorillegaladdress",
+        "cuda_error_illegal_address",
+        "cuda error: an illegal memory access",
+        "sticky error detected",
+        "returning 700",
+        "cuda error 700",
+    )
+    return any(marker in message for marker in markers)
+
+
 class VideoGenerator:
     """LTX text/image/video-conditioned generation with memory control."""
 
@@ -218,7 +237,7 @@ class VideoGenerator:
         even though the GPU is working normally.  The callback is deliberately
         tensor-free: it only updates UI progress and never copies GPU data.
         """
-        if progress_callback is None or self.pipe is None:
+        if self.pipe is None:
             return kwargs
 
         try:
@@ -229,13 +248,23 @@ class VideoGenerator:
             )
         except (TypeError, ValueError):
             supports_callback = False
+            parameters = {}
+        run_kwargs = dict(kwargs)
+        # The bundled T5 encoder supports 128 tokens. A larger Diffusers
+        # default can turn a long character bible into an indexing failure.
+        if "max_sequence_length" in parameters and "max_sequence_length" not in run_kwargs:
+            run_kwargs["max_sequence_length"] = 128
+
+        if progress_callback is None:
+            return run_kwargs
+
         if not supports_callback:
             self._report(
                 progress_callback,
                 "Rendering video (this Diffusers version cannot report individual steps)…",
                 0.5,
             )
-            return kwargs
+            return run_kwargs
 
         total_steps = max(1, int(kwargs.get("num_inference_steps", 1)))
 
@@ -249,7 +278,6 @@ class VideoGenerator:
             )
             return callback_kwargs
 
-        run_kwargs = dict(kwargs)
         run_kwargs["callback_on_step_end"] = on_step_end
         run_kwargs["callback_on_step_end_tensor_inputs"] = []
         return run_kwargs

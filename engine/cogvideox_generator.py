@@ -39,12 +39,16 @@ _SEQUENCE_SPLIT = re.compile(
 )
 
 
-def build_story_sequence(story: str, target_seconds: int) -> tuple[str, ...]:
+def build_story_sequence(
+    story: str,
+    target_seconds: int,
+    clip_seconds: float = COGVIDEOX_CLIP_SECONDS,
+) -> tuple[str, ...]:
     """Split a chronological prompt into safe, ordered CogVideoX clip beats."""
     clean = re.sub(r"\s+", " ", (story or "").strip())
     if not clean:
         raise ValueError("Describe the story first.")
-    clip_count = max(1, int(ceil(max(1, int(target_seconds)) / COGVIDEOX_CLIP_SECONDS)))
+    clip_count = max(1, int(ceil(max(1, int(target_seconds)) / max(0.1, float(clip_seconds)))))
     beats = [part.strip(" ,.-") for part in _SEQUENCE_SPLIT.split(clean) if part.strip(" ,.-")]
     if not beats:
         beats = [clean]

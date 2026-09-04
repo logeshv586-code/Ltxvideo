@@ -23,6 +23,7 @@ import torch
 from PIL import Image
 
 from config import OUTPUTS_DIR
+from engine.generator import is_fatal_cuda_error
 from engine.video_processor import concatenate_videos_streaming, extract_tail_frames, trim_video_start_frames
 
 Progress = Callable[[str, float], None] | None
@@ -371,11 +372,10 @@ def scene_prompt(
         if character_lock.strip()
         else ""
     )
-    context = (
-        f" Concise overall context: {_shorten_words(full_story, 70)}."
-        if full_story
-        else ""
-    )
+    # ``full_story`` often includes a whole character and environment bible.
+    # The lock and current beat carry the useful information without exceeding
+    # the LTX text encoder's 128-token context.
+    context = ""
     camera = (
         f" Camera direction: {_shorten_words(camera_hint, 24)}."
         if camera_hint.strip()
@@ -387,9 +387,7 @@ def scene_prompt(
         f"Video clip {index + 1} of {total}. {continuity}{context} "
         f"Current visible action: {action}. {focus}{character}{camera} "
         f"Visual style: {style_prompt}. "
-        "Premium clean image quality, readable facial features, crisp subject silhouette, coherent materials, "
-        "stable anatomy and object geometry, smooth purposeful motion, controlled cinematic lighting, consistent texture detail. "
-        "No morphing, duplicate subjects, extra limbs, flicker, muddy texture, unreadable text, sudden jump cut or identity change."
+        "Clean stable anatomy, coherent materials, controlled lighting, no morphing, duplicates, flicker, text or identity change."
     )
 
 
@@ -430,6 +428,16 @@ def _aligned_tail(frames: list[Image.Image], preferred: int) -> list[Image.Image
     return frames[-valid:]
 
 
+def _raise_if_fatal_cuda_error(exc: BaseException) -> None:
+    """Do not conceal a poisoned CUDA context behind a continuation fallback."""
+    if is_fatal_cuda_error(exc):
+        raise RuntimeError(
+            "CUDA reported illegal-memory-access (error 700). The CUDA context is unsafe, so the job stopped "
+            "before trying another fallback. Restart the server, then rerun the story; completed part files "
+            "remain in outputs/."
+        ) from exc
+
+
 class LongFormVideoGenerator:
     """Generate one clip or a continuous multi-clip video on a 6 GB GPU."""
 
@@ -458,6 +466,9 @@ class LongFormVideoGenerator:
             progress_callback=callback,
             character_lock=character_lock,
             fps=plan.profile.fps,
+            # Connected clips must use one stable native size. This prevents a
+            # text-only T4 upscale from being applied to heavier conditioning.
+            _adaptive_native_upscale=False,
         )
 
     def _first_clip(
@@ -471,9 +482,13 @@ class LongFormVideoGenerator:
         callback: Progress,
     ) -> Path:
         kwargs = self._base_kwargs(prompt, plan, negative_prompt, character_lock, seed, callback)
-        if reference_image is not None:
-            return Path(self.generator.generate_image_to_video(image=reference_image, **kwargs))
-        return Path(self.generator.generate_text_to_video(**kwargs))
+        try:
+            if reference_image is not None:
+                return Path(self.generator.generate_image_to_video(image=reference_image, **kwargs))
+            return Path(self.generator.generate_text_to_video(**kwargs))
+        except Exception as exc:
+            _raise_if_fatal_cuda_error(exc)
+            raise
 
     def _i2v_fallback(
         self,
@@ -485,12 +500,16 @@ class LongFormVideoGenerator:
         seed: int,
         callback: Progress,
     ) -> Path:
-        return Path(
-            self.generator.generate_image_to_video(
-                image=anchor,
-                **self._base_kwargs(prompt, plan, negative_prompt, character_lock, seed, callback),
+        try:
+            return Path(
+                self.generator.generate_image_to_video(
+                    image=anchor,
+                    **self._base_kwargs(prompt, plan, negative_prompt, character_lock, seed, callback),
+                )
             )
-        )
+        except Exception as exc:
+            _raise_if_fatal_cuda_error(exc)
+            raise
 
     def generate(
         self,
@@ -566,6 +585,7 @@ class LongFormVideoGenerator:
                     else:
                         accepted = raw
                 except Exception as exc:
+                    _raise_if_fatal_cuda_error(exc)
                     local_progress(f"Using compatible continuation fallback ({type(exc).__name__})", 0.08)
                     if not tail:
                         raise RuntimeError(f"Continuation failed: {exc}") from exc

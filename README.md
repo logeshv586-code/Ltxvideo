@@ -432,6 +432,15 @@ For CUDA out-of-memory errors, the worker:
 3. reloads the model,
 4. retries once.
 
+CUDA error 700 / `cudaErrorIllegalAddress` is different: it is a sticky CUDA
+context failure, not recoverable memory pressure. The app stops that job before
+attempting a fallback on the poisoned context. Restart the server, then rerun
+the story; already encoded individual clips remain in `outputs/`.
+
+For a dual-T4 continuous LTX story, the app keeps image animation and
+tail-frame continuation at the selected safe native size (for example
+576×320). Adaptive upscaling is reserved for standalone text-only clips.
+
 ---
 
 # Export sizes
