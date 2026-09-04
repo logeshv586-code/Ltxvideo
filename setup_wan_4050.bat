@@ -8,7 +8,7 @@ echo ============================================================
 
 if not exist venv\Scripts\python.exe (
     echo Creating Python virtual environment...
-    py -3 -m venv venv
+    python -m venv venv
     if errorlevel 1 goto :error
 )
 
@@ -33,6 +33,6 @@ exit /b 0
 
 :error
 echo.
-echo Setup failed. Review the message above and try again.
+echo Setup failed. Make sure Python 3.10+ is installed and available as python.
 pause
 exit /b 1
