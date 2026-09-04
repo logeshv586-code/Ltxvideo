@@ -1,74 +1,183 @@
-# Wan2.1 RTX 4050 Quality Setup
+# Wan2.1 GGUF RTX 4050 Quality Setup
 
-This is the recommended local quality path for an RTX 4050 Laptop GPU with 6 GB VRAM.
+This is the recommended local path for an **RTX 4050 Laptop GPU with 6 GB VRAM and 16 GB system RAM**.
 
-## Recommended engine
+## Recommended backend
 
-Use **Wan2.1-T2V-1.3B** for the final kids-cartoon render on the 4050.
+Use **Wan2.1-T2V-1.3B with a GGUF Q5_0 transformer**.
 
-The generator intentionally stays at the stable Wan native shape:
-
-- 832 × 480
-- 81 frames
-- 16 FPS
-- 40 inference steps by default
-- sequential CPU offload on GPUs below 12 GB
-- VAE tiling and slicing enabled
-
-The delivery pipeline then improves the generated frames instead of asking the diffusion model to render native 1080p, which is much less practical on 6 GB VRAM.
-
-## Quality pipeline
+The application now selects the backend automatically:
 
 ```text
-Wan2.1-T2V-1.3B
+VRAM below 10 GB  -> GGUF transformer
+VRAM 10 GB+       -> full Diffusers transformer
+```
+
+You can override this with:
+
+```powershell
+$env:WAN_BACKEND="gguf"
+$env:WAN_BACKEND="full"
+```
+
+For the RTX 4050, keep `gguf`.
+
+## Why Q5_0
+
+Q5_0 is used as the default quality/memory compromise. It is more conservative than full FP16 weights while retaining more transformer precision than Q4_0. The remaining Wan components still come from the official Diffusers repository.
+
+GGUF only replaces the diffusion transformer. Tokenizer, text encoder, scheduler and VAE are downloaded from:
+
+```text
+Wan-AI/Wan2.1-T2V-1.3B-Diffusers
+```
+
+The default quantized transformer comes from:
+
+```text
+samuelchristlie/Wan2.1-T2V-1.3B-GGUF
+Wan2.1-T2V-1.3B-Q5_0.gguf
+```
+
+Both locations can be overridden with environment variables if needed.
+
+## One-time Windows setup
+
+From the repository folder:
+
+```powershell
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+python setup_wan.py --download-gguf
+```
+
+Or use:
+
+```text
+setup_wan_4050.bat
+```
+
+The GGUF setup downloads the official pipeline components but skips the full transformer safetensors, then downloads only the Q5_0 GGUF transformer.
+
+Check the setup:
+
+```powershell
+python setup_wan.py --status
+```
+
+## Recommended 4050 runtime
+
+```powershell
+$env:WAN_BACKEND="gguf"
+$env:WAN_OFFLOAD_MODE="sequential"
+$env:WAN_DELIVERY_FPS="32"
+$env:WAN_SMOOTHING="auto"
+$env:WAN_UPSCALER="auto"
+$env:REALESRGAN_TILE="256"
+python run.py --video-studio-ui
+```
+
+Or simply run:
+
+```text
+run_wan_4050.bat
+```
+
+## Generation settings
+
+Keep these defaults for the 6 GB laptop:
+
+```text
+Model       Wan2.1-T2V-1.3B
+Transformer GGUF Q5_0
+Native size 832 x 480
+Frames      81
+Native FPS  16
+Steps       40
+Guidance    6.0
+Offload     Sequential CPU offload
+VAE         Tiling + slicing, fp32 decode when possible
+Workers     1
+```
+
+Do not try to make the diffusion stage render native 1080p on a 6 GB GPU. Quality is improved after generation.
+
+## Delivery pipeline
+
+```text
+Wan2.1 GGUF Q5_0
 832x480 @ 16 FPS
-        ↓
-RIFE interpolation
-16 FPS → 32 FPS
-        ↓
-Real-ESRGAN anime/video model
-2x cartoon upscaling
-        ↓
+        |
+        v
+RIFE smoothing when installed
+16 FPS -> 32 FPS
+        |
+        v
+Real-ESRGAN anime/video upscaling when installed
+2x, tile 256
+        |
+        v
 FFmpeg final delivery
 1920x1080 @ 32 FPS
 ```
 
-For story assembly, the same base seed is reused across scenes and the exact character/costume continuity lock is repeated in every scene prompt. This is intended to reduce identity and wardrobe drift.
+When RIFE is not installed, the app falls back to FFmpeg motion interpolation. When Real-ESRGAN is not installed, it falls back to Lanczos scaling with light sharpening.
 
-## Optional portable enhancement tools
+## 16 GB RAM recommendation
 
-The application automatically detects these portable executables:
+16 GB physical RAM is usable but tight because the Wan text encoder still consumes system memory while the transformer is quantized. Keep Windows virtual memory/page file enabled and preferably system-managed on an SSD.
 
-- `rife-ncnn-vulkan`
-- `realesrgan-ncnn-vulkan`
+While generating:
 
-They are intentionally external to the Python/PyTorch environment so Wan can keep most of the 6 GB CUDA budget for generation.
+- use one GPU worker only;
+- close games and GPU-heavy applications;
+- close other local AI models;
+- avoid running a second video generation at the same time;
+- keep enough free SSD space for model files, page file and temporary frames.
 
-### Windows
+## Optional RIFE and Real-ESRGAN
 
-Download the official portable releases, keep each executable together with the model folders included in its release archive, then either add the folders to `PATH` or set explicit paths.
+The app automatically detects:
 
-PowerShell example:
+```text
+rife-ncnn-vulkan
+realesrgan-ncnn-vulkan
+```
+
+You can set explicit Windows paths:
 
 ```powershell
 $env:RIFE_EXE="C:\AI\rife\rife-ncnn-vulkan.exe"
 $env:REALESRGAN_EXE="C:\AI\realesrgan\realesrgan-ncnn-vulkan.exe"
-python setup_wan.py --status
-python run.py --video-studio-ui
 ```
 
-### Linux
+Keep each executable together with the model folders supplied in its release archive.
 
-```bash
-export RIFE_EXE=/opt/rife/rife-ncnn-vulkan
-export REALESRGAN_EXE=/opt/realesrgan/realesrgan-ncnn-vulkan
-python setup_wan.py --status
-python run.py --video-studio-ui --server
+## Quality controls
+
+Default smoothing:
+
+```text
+WAN_SMOOTHING=auto
 ```
 
-## Defaults for cartoons
+Options:
 
-The integrated Real-ESRGAN path uses:
+```text
+auto
+rife
+ffmpeg
+off
+```
+
+Default upscaler:
+
+```text
+WAN_UPSCALER=auto
+```
+
+Real-ESRGAN defaults:
 
 ```text
 model: realesr-animevideov3
@@ -76,81 +185,63 @@ scale: 2x
 tile: 256
 ```
 
-The 256 tile default is deliberately conservative for laptop GPUs. Override it only after a stable test:
+If Real-ESRGAN runs out of memory, reduce the tile:
 
 ```powershell
-$env:REALESRGAN_TILE="192"   # less memory / slower
-$env:REALESRGAN_TILE="320"   # potentially faster / more memory
+$env:REALESRGAN_TILE="192"
 ```
 
-## Smoothing controls
+or:
 
-Default:
+```powershell
+$env:REALESRGAN_TILE="128"
+```
+
+## Kids cartoon workflow
+
+For the best consistency, generate short scenes rather than one long diffusion pass:
 
 ```text
-WAN_SMOOTHING=auto
+story
+  -> scene 1
+  -> scene 2
+  -> scene 3
+  -> ...
+  -> smooth/upscale each clip
+  -> join clips
+  -> final narration/audio
 ```
 
-Behavior:
+The story generator reuses one base seed and repeats the same character identity, face, proportions, costume, colors and art-style lock in every scene prompt.
 
-1. Use RIFE when the portable executable is installed.
-2. Otherwise use FFmpeg motion-compensated interpolation.
-3. If interpolation fails, keep native 16 FPS rather than crashing the generated video.
+Use one important visible action and one controlled camera movement per scene. GGUF reduces memory use, but it does not fix an overloaded or contradictory prompt.
 
-Overrides:
+## Useful commands
+
+Status:
 
 ```powershell
-$env:WAN_SMOOTHING="rife"
-$env:WAN_SMOOTHING="ffmpeg"
-$env:WAN_SMOOTHING="off"
+python setup_wan.py --status
 ```
 
-The default delivery target is 32 FPS. It can be changed with:
+Download low-memory GGUF setup:
 
 ```powershell
-$env:WAN_DELIVERY_FPS="32"
+python setup_wan.py --download-gguf
 ```
 
-The current low-memory RIFE integration is designed for 2× interpolation, so 32 FPS is recommended for Wan's native 16 FPS output.
-
-## Upscaling controls
-
-Default:
-
-```text
-WAN_UPSCALER=auto
-```
-
-Behavior:
-
-1. Use `realesr-animevideov3` when Real-ESRGAN NCNN/Vulkan is installed.
-2. Otherwise use the existing high-quality Lanczos + light sharpening delivery path.
-
-Overrides:
-
-```powershell
-$env:WAN_UPSCALER="realesrgan"
-$env:WAN_UPSCALER="off"
-$env:REALESRGAN_MODEL="realesr-animevideov3"
-$env:REALESRGAN_SCALE="2"
-```
-
-## Wan model setup
+Download full Diffusers model for higher-VRAM machines:
 
 ```powershell
 python setup_wan.py --download
-python setup_wan.py --status
-python run.py --video-studio-ui
 ```
 
-For a 6 GB RTX 4050, keep this unless a measured test proves otherwise:
+Run the 4050 profile:
 
 ```powershell
-$env:WAN_OFFLOAD_MODE="sequential"
+run_wan_4050.bat
 ```
 
-## What this improves
+## Important expectation
 
-RIFE improves perceived motion smoothness. Real-ESRGAN improves edges and stylized texture at delivery resolution. Neither tool can completely repair a bad diffusion generation, so the Wan prompt also locks character identity, proportions, costume, colors and simple controlled movement.
-
-For kids' story videos, use short scenes with one main visible action per clip. Generate several stable clips and assemble them rather than trying to create a long complex action in one diffusion pass.
+GGUF primarily reduces model-weight memory. It does not make the RTX 4050 equivalent to a high-end 16-24 GB GPU. Generation can still be slow because sequential CPU offload moves model blocks between RAM and VRAM. The goal of this profile is **reliable local generation with the best practical cartoon quality on 6 GB VRAM**, followed by dedicated smoothing and upscaling.
