@@ -16,6 +16,7 @@ REQUIRED = {
     "transformers": "transformers>=4.48.0",
     "accelerate": "accelerate>=1.2.0",
     "bitsandbytes": "bitsandbytes>=0.45.0",
+    "gguf": "gguf>=0.10.0",
     "cv2": "opencv-python-headless>=4.8.0",
     "imageio_ffmpeg": "imageio-ffmpeg>=0.5.1",
     "psutil": "psutil>=5.9.0",
@@ -96,7 +97,8 @@ def main() -> int:
     elif is_cogvideox:
         _, worker_count = configure_hardware_profile()
         print("Launching Video Model Studio with CogVideoX, Wan2.1 and Moon Cookie Fox continuity.")
-        print("If setup is incomplete, run: python setup_cogvideox.py --download or python setup_wan.py --download")
+        print("For RTX 4050 GGUF setup, run: python setup_wan.py --download-gguf")
+        print("For full Wan weights, run: python setup_wan.py --download")
         from cogvideox_app import CSS as app_css
         from cogvideox_app import THEME as app_theme
         from cogvideox_app import create_app
