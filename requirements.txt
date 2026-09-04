@@ -16,3 +16,4 @@ imageio>=2.34.0
 imageio-ffmpeg>=0.5.1
 psutil>=5.9.0
 edge-tts>=7.0.0
+ftfy>=6.2.0

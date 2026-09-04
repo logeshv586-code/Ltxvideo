@@ -20,6 +20,7 @@ REQUIRED = {
     "cv2": "opencv-python-headless>=4.8.0",
     "imageio_ffmpeg": "imageio-ffmpeg>=0.5.1",
     "psutil": "psutil>=5.9.0",
+    "ftfy": "ftfy>=6.2.0",
 }
 
 
@@ -142,8 +143,6 @@ def main() -> int:
         server_port=server_port,
         inbrowser=inbrowser,
         show_error=True,
-        theme=app_theme,
-        css=app_css,
     )
     return 0
 

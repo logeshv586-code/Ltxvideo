@@ -2,14 +2,9 @@
 setlocal
 cd /d "%~dp0"
 
-if not exist venv\Scripts\python.exe (
-    echo Python environment not found.
-    echo Run setup_wan_4050.bat first.
-    pause
-    exit /b 1
+if exist venv\Scripts\activate.bat (
+    call venv\Scripts\activate.bat
 )
-
-call venv\Scripts\activate.bat
 
 rem RTX 4050 6 GB / 16 GB RAM quality-safe defaults
 set WAN_BACKEND=gguf

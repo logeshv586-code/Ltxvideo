@@ -297,6 +297,8 @@ def create_app() -> gr.Blocks:
     with gr.Blocks(
         title="LTX Personal Video Maker",
         analytics_enabled=False,
+        theme=THEME,
+        css=CSS,
     ) as app:
         gr.HTML("""
             <header class="studio-header">
@@ -448,6 +450,4 @@ if __name__ == "__main__":
         server_port=7860,
         inbrowser=False,
         show_error=True,
-        theme=THEME,
-        css=CSS,
     )

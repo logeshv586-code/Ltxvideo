@@ -324,7 +324,12 @@ def _voice_controls() -> tuple[gr.Textbox, gr.Radio, gr.Dropdown]:
 
 
 def create_app() -> gr.Blocks:
-    with gr.Blocks(title="LTX Creator — CogVideoX & Moon Cookie Fox", analytics_enabled=False) as app:
+    with gr.Blocks(
+        title="LTX Creator — CogVideoX & Moon Cookie Fox",
+        analytics_enabled=False,
+        theme=THEME,
+        css=CSS,
+    ) as app:
         gr.HTML("""
           <header class="studio-header"><div class="brand-mark">LTX</div><div class="brand-name">Quality Clip Studio</div>
           <div class="steps"><span class="step active"><b>1</b> Choose engine</span><i class="step-line"></i><span class="step"><b>2</b> Create</span></div></header>

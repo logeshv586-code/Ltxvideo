@@ -14,10 +14,10 @@ from engine.wan_generator import (
 
 
 class WanGeneratorTests(unittest.TestCase):
-    def test_uses_the_official_stable_480p_shape(self):
-        self.assertEqual((WAN_WIDTH, WAN_HEIGHT), (832, 480))
-        self.assertEqual((WAN_FRAMES, WAN_FPS), (81, 16))
-        self.assertAlmostEqual(WAN_CLIP_SECONDS, 5.0625)
+    def test_uses_the_official_stable_shape(self):
+        self.assertEqual((WAN_WIDTH, WAN_HEIGHT), (640, 360))
+        self.assertEqual((WAN_FRAMES, WAN_FPS), (49, 16))
+        self.assertAlmostEqual(WAN_CLIP_SECONDS, 49 / 16)
 
     def test_delivery_uses_two_x_motion_smoothing_target(self):
         self.assertEqual(WAN_DELIVERY_FPS, 32)

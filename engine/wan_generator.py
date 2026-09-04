@@ -45,12 +45,13 @@ WAN_GGUF_BASE_DIR = Path(
     os.getenv("WAN_GGUF_BASE_DIR", MODELS_DIR / "wan2.1-t2v-1.3b-diffusers-base")
 )
 
-WAN_WIDTH = 832
-WAN_HEIGHT = 480
-WAN_FRAMES = 81
+WAN_WIDTH = int(os.getenv("WAN_WIDTH", "640"))
+WAN_HEIGHT = int(os.getenv("WAN_HEIGHT", "360"))
+WAN_FRAMES = int(os.getenv("WAN_FRAMES", "49"))
 WAN_FPS = 16
 WAN_DELIVERY_FPS = int(os.getenv("WAN_DELIVERY_FPS", "32"))
-WAN_STEPS = int(os.getenv("WAN_STEPS", "40"))
+WAN_STEPS = int(os.getenv("WAN_STEPS", "30"))
+WAN_GUIDANCE_SCALE = float(os.getenv("WAN_GUIDANCE_SCALE", "4.5"))
 WAN_CLIP_SECONDS = WAN_FRAMES / WAN_FPS
 
 
@@ -161,10 +162,13 @@ class WanVideoGenerator:
 
         try:
             from diffusers import (
+                AutoencoderKLWan,
                 GGUFQuantizationConfig,
+                UniPCMultistepScheduler,
                 WanPipeline,
                 WanTransformer3DModel,
             )
+            from transformers import AutoTokenizer, UMT5EncoderModel
         except ImportError as exc:
             raise RuntimeError(
                 "GGUF Wan requires a current Diffusers build and the 'gguf' Python package. "
@@ -178,14 +182,29 @@ class WanVideoGenerator:
             quantization_config=quant_config,
             config=str(WAN_GGUF_BASE_DIR),
             subfolder="transformer",
-            dtype=torch.float16,
+            torch_dtype=torch.float16,
         )
-        self.pipe = WanPipeline.from_pretrained(
-            str(WAN_GGUF_BASE_DIR),
-            transformer=transformer,
-            dtype=torch.float16,
+
+        self._report(callback, "Loading text encoder, tokenizer, scheduler & VAE", 0.15)
+        tokenizer = AutoTokenizer.from_pretrained(str(WAN_GGUF_BASE_DIR / "tokenizer"))
+        scheduler = UniPCMultistepScheduler.from_pretrained(str(WAN_GGUF_BASE_DIR / "scheduler"))
+        vae = AutoencoderKLWan.from_pretrained(
+            str(WAN_GGUF_BASE_DIR / "vae"),
+            torch_dtype=torch.float16,
             low_cpu_mem_usage=True,
-            local_files_only=True,
+        )
+        text_encoder = UMT5EncoderModel.from_pretrained(
+            str(WAN_GGUF_BASE_DIR / "text_encoder"),
+            torch_dtype=torch.float16,
+            low_cpu_mem_usage=True,
+        )
+
+        self.pipe = WanPipeline(
+            tokenizer=tokenizer,
+            text_encoder=text_encoder,
+            vae=vae,
+            transformer=transformer,
+            scheduler=scheduler,
         )
         self.backend = "gguf"
 
@@ -233,12 +252,16 @@ class WanVideoGenerator:
             except Exception:
                 pass
 
-        if offload_mode == "sequential":
-            self.pipe.enable_sequential_cpu_offload(gpu_id=self.device_index)
-            offload_label = "6 GB-safe sequential CPU offload"
-        else:
+        if backend == "gguf" or offload_mode == "model":
             self.pipe.enable_model_cpu_offload(gpu_id=self.device_index)
             offload_label = "model CPU offload"
+        else:
+            try:
+                self.pipe.enable_sequential_cpu_offload(gpu_id=self.device_index)
+                offload_label = "sequential CPU offload"
+            except Exception:
+                self.pipe.enable_model_cpu_offload(gpu_id=self.device_index)
+                offload_label = "model CPU offload"
 
         if hasattr(self.pipe.vae, "enable_tiling"):
             self.pipe.vae.enable_tiling()
@@ -286,8 +309,8 @@ class WanVideoGenerator:
                     width=WAN_WIDTH,
                     num_frames=WAN_FRAMES,
                     num_inference_steps=WAN_STEPS,
-                    guidance_scale=6.0,
-                    generator=torch.Generator(device=f"cuda:{self.device_index}").manual_seed(actual_seed),
+                    guidance_scale=WAN_GUIDANCE_SCALE,
+                    generator=torch.Generator(device="cpu").manual_seed(actual_seed),
                 ).frames[0]
         except torch.OutOfMemoryError as exc:
             self._clear_cuda_cache()
