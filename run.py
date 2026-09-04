@@ -84,12 +84,22 @@ def main() -> int:
 
     ensure_dependencies()
     is_hunyuan = "--hunyuan-ui" in args
+    is_cogvideox = "--cogvideox-ui" in args
     worker_count = 1
+    app_theme = None
+    app_css = None
 
     if is_hunyuan:
         print("Launching Moon Cookie HunyuanVideo-1.5 studio for RTX 4080-class GPUs.")
         print("If setup is incomplete, run: python setup_hunyuan.py --install-code --show-downloads")
         from hunyuan_app import create_app
+    elif is_cogvideox:
+        _, worker_count = configure_hardware_profile()
+        print("Launching CogVideoX-5B Quality Clip Studio with Moon Cookie Fox continuity.")
+        print("If setup is incomplete, run: python setup_cogvideox.py --download")
+        from cogvideox_app import CSS as app_css
+        from cogvideox_app import THEME as app_theme
+        from cogvideox_app import create_app
     else:
         _, worker_count = configure_hardware_profile()
         marker = ROOT / "models" / ".ltx_ready"
@@ -106,6 +116,8 @@ def main() -> int:
             from app import create_app
         else:
             print("Launching Easy Video Creator with adaptive GPU workers.")
+            from easy_app import CSS as app_css
+            from easy_app import THEME as app_theme
             from easy_app import create_app
 
     app = create_app()
@@ -128,6 +140,8 @@ def main() -> int:
         server_port=server_port,
         inbrowser=inbrowser,
         show_error=True,
+        theme=app_theme,
+        css=app_css,
     )
     return 0
 

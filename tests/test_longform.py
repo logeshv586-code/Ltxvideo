@@ -13,9 +13,9 @@ from engine.longform import (
 
 
 class PersonalVideoPlannerTests(unittest.TestCase):
-    def test_auto_duration_scaling_helper_still_caps_at_five_minutes(self):
+    def test_auto_duration_scaling_helper_still_caps_at_ten_minutes(self):
         self.assertGreaterEqual(estimate_auto_seconds("A fox opens a door."), 8)
-        self.assertLessEqual(estimate_auto_seconds("word " * 1000), 300)
+        self.assertLessEqual(estimate_auto_seconds("word " * 2000), 600)
 
     def test_single_four_second_clip(self):
         plan = plan_story(
@@ -31,7 +31,7 @@ class PersonalVideoPlannerTests(unittest.TestCase):
         self.assertEqual(plan.target_seconds, 4)
         self.assertEqual(plan.generation_mode, "Single Clip")
         self.assertEqual((plan.width, plan.height), (576, 320))
-        self.assertEqual(plan.profile.inference_steps, 24)
+        self.assertEqual(plan.profile.inference_steps, 28)
 
     def test_single_eight_second_high_uses_memory_safe_native_size(self):
         plan = plan_story(
@@ -89,7 +89,7 @@ class PersonalVideoPlannerTests(unittest.TestCase):
             self.assertEqual((profile.tail_frames - 1) % 8, 0)
         for frames in CLIP_LENGTHS.values():
             self.assertEqual((frames - 1) % 8, 0)
-            self.assertLessEqual(frames + 16, 241)
+            self.assertLessEqual(frames + 16, 300)
 
     def test_customer_aspects_resolve(self):
         for label, expected in ASPECT_LABELS.items():
@@ -117,7 +117,7 @@ class PersonalVideoPlannerTests(unittest.TestCase):
     def test_single_clip_does_not_receive_entire_long_script(self):
         text = (
             "The Moon Cookie sits on a cloud and speaks. Then it jumps to another cloud. "
-            "Then a fox enters. Then they make a cookie. Then everybody walks away together. "
+            "Then a fox enters. Then they make a cookie. Then everybody walks away together.\n"
             "Style: clay animation"
         )
         plan = plan_story(

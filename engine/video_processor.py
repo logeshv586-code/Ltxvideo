@@ -143,10 +143,9 @@ def export_delivery(
 ) -> Path:
     """Create the customer delivery MP4 and optionally trim to exact duration.
 
-    The previous CRF-only path could produce ~1 Mbps 720p files for simple
-    scenes. That is technically valid but unnecessarily throws away texture
-    after an expensive generation. Final delivery now targets ~4 Mbps with a
-    6 Mbps ceiling, close to the supplied 720p reference video's data rate.
+    The previous delivery target could still throw away fine texture after an
+    expensive generation. This profile gives 720p final renders more bitrate
+    headroom without pretending post-processing can invent model detail.
     """
     video_path, output_path = Path(video_path), Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -165,7 +164,7 @@ def export_delivery(
     cmd.extend([
         "-vf", vf_pipeline,
         "-c:v", "libx264", "-preset", "slow",
-        "-b:v", "4M", "-maxrate", "6M", "-bufsize", "12M",
+        "-crf", "17", "-maxrate", "10M", "-bufsize", "20M",
         "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output_path),
     ])
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)

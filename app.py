@@ -274,6 +274,7 @@ def generate_directed(
     intensity,
     extra_details,
     dialogue_audio,
+    tamil_voiceover,
     reference_image,
     negative,
     resolution,
@@ -302,6 +303,21 @@ def generate_directed(
             prompt, reference_image, negative, width, height, frames, int(steps), float(guidance), int(seed), callback
         )
     final = _delivery(Path(path), export_preset)
+    
+    # Audio Muxing
+    if tamil_voiceover and dialogue_audio.strip():
+        progress(0.999, desc="Generating Tamil Voiceover")
+        try:
+            from engine.audio_processor import generate_tamil_tts, add_audio_to_video
+            audio_path = final.with_suffix(".mp3")
+            final_audio_path = final.with_name(final.stem + "_audio.mp4")
+            generate_tamil_tts(dialogue_audio.strip(), audio_path)
+            add_audio_to_video(final, audio_path, final_audio_path)
+            final = final_audio_path
+            logs.append("Audio voiceover attached successfully.")
+        except Exception as e:
+            logs.append(f"Audio generation failed: {e}")
+
     return str(final), prompt, "\n".join(logs[-14:])
 
 
@@ -373,6 +389,7 @@ def _build_directed_studio(
                 lines=2,
                 placeholder="Example: soft city ambience; no dialogue. Or: she says, “We made it.” in a calm voice.",
             )
+            tamil_voiceover = gr.Checkbox(label="Enable Tamil Voiceover (TTS)", value=True)
             negative = gr.Textbox(label="Avoid / negative prompt", value=negative_default, lines=2)
             with gr.Row():
                 resolution = gr.Dropdown(list(RESOLUTION_PRESETS), value=DEFAULT_RESOLUTION, label="Native generation size")
@@ -411,7 +428,7 @@ def _build_directed_studio(
         generate_directed,
         [
             mode_state, subject, action, environment, style, shot, camera, lighting,
-            intensity, extra_details, dialogue_audio, reference_image, negative,
+            intensity, extra_details, dialogue_audio, tamil_voiceover, reference_image, negative,
             resolution, duration, steps, guidance, seed, export_preset,
         ],
         [output, prompt_preview, status],

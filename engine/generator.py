@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import gc
+import inspect
 import random
 from datetime import datetime
 from pathlib import Path
@@ -156,6 +157,7 @@ class VideoGenerator:
             low_cpu_mem_usage=True,
         )
         self.pipe.enable_model_cpu_offload()
+
         if ENABLE_VAE_TILING and hasattr(self.pipe.vae, "enable_tiling"):
             self.pipe.vae.enable_tiling()
         if hasattr(self.pipe.vae, "enable_slicing"):
@@ -189,8 +191,11 @@ class VideoGenerator:
         self._load_pipeline(mode, progress_callback)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        run_kwargs = self._with_step_progress(kwargs, progress_callback)
         try:
-            return self.pipe(**kwargs)
+            result = self.pipe(**run_kwargs)
+            self._report(progress_callback, "Denoising complete; decoding video frames…", 0.91)
+            return result
         except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
             message = str(exc).lower()
             memory_error = isinstance(exc, torch.cuda.OutOfMemoryError) or "out of memory" in message
@@ -201,7 +206,53 @@ class VideoGenerator:
             self._load_pipeline(mode, progress_callback)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            return self.pipe(**kwargs)
+            result = self.pipe(**self._with_step_progress(kwargs, progress_callback))
+            self._report(progress_callback, "Denoising complete; decoding video frames…", 0.91)
+            return result
+
+    def _with_step_progress(self, kwargs: dict, progress_callback: Progress) -> dict:
+        """Attach a Diffusers denoising callback when the loaded pipeline supports it.
+
+        Without this callback LTX can spend several minutes in ``pipe(...)``
+        after reporting only "Generating".  That looks like a frozen T4 job,
+        even though the GPU is working normally.  The callback is deliberately
+        tensor-free: it only updates UI progress and never copies GPU data.
+        """
+        if progress_callback is None or self.pipe is None:
+            return kwargs
+
+        try:
+            parameters = inspect.signature(self.pipe.__call__).parameters
+            supports_callback = "callback_on_step_end" in parameters or any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+        except (TypeError, ValueError):
+            supports_callback = False
+        if not supports_callback:
+            self._report(
+                progress_callback,
+                "Rendering video (this Diffusers version cannot report individual steps)…",
+                0.5,
+            )
+            return kwargs
+
+        total_steps = max(1, int(kwargs.get("num_inference_steps", 1)))
+
+        def on_step_end(_pipe, step: int, _timestep, callback_kwargs: dict):
+            completed = min(total_steps, int(step) + 1)
+            value = 0.5 + 0.4 * completed / total_steps
+            self._report(
+                progress_callback,
+                f"Rendering video · diffusion step {completed}/{total_steps}",
+                value,
+            )
+            return callback_kwargs
+
+        run_kwargs = dict(kwargs)
+        run_kwargs["callback_on_step_end"] = on_step_end
+        run_kwargs["callback_on_step_end_tensor_inputs"] = []
+        return run_kwargs
 
     def _record_qc(
         self,
@@ -270,11 +321,13 @@ class VideoGenerator:
             guidance_scale=float(guidance_scale),
             decode_timestep=0.05,
             decode_noise_scale=0.025,
-            generator=torch.Generator(device="cuda").manual_seed(actual_seed),
+            generator=torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(actual_seed),
         )
         frames = self._run_pipe_with_cuda_retry("t2v", kwargs, progress_callback).frames[0]
+        self._report(progress_callback, "Encoding MP4…", 0.95)
         output = self._output_path("ltx_t2v")
         export_to_video(frames, str(output), fps=int(fps))
+        self._report(progress_callback, "Checking generated video…", 0.98)
         qc = self._record_qc(output, width, height, num_frames, fps=fps)
         self._report(progress_callback, f"Saved {output.name} · QC {'PASS' if not qc.fatal else 'FAIL'}", 1.0)
         return output
@@ -326,11 +379,13 @@ class VideoGenerator:
             guidance_scale=float(guidance_scale),
             decode_timestep=0.05,
             decode_noise_scale=0.025,
-            generator=torch.Generator(device="cuda").manual_seed(actual_seed),
+            generator=torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(actual_seed),
         )
         frames = self._run_pipe_with_cuda_retry("i2v", kwargs, progress_callback).frames[0]
+        self._report(progress_callback, "Encoding MP4…", 0.95)
         output = self._output_path("ltx_i2v")
         export_to_video(frames, str(output), fps=int(fps))
+        self._report(progress_callback, "Checking generated video…", 0.98)
         qc = self._record_qc(output, width, height, num_frames, fps=fps)
         self._report(progress_callback, f"Saved {output.name} · QC {'PASS' if not qc.fatal else 'FAIL'}", 1.0)
         return output
@@ -389,7 +444,7 @@ class VideoGenerator:
             image_cond_noise_scale=float(image_cond_noise_scale),
             decode_timestep=0.05,
             decode_noise_scale=0.025,
-            generator=torch.Generator(device="cuda").manual_seed(self._seed(seed)),
+            generator=torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(self._seed(seed)),
         )
 
         prefix = "ltx_condition"
@@ -416,8 +471,10 @@ class VideoGenerator:
             self._report(progress_callback, "Generating conditioned clip…", 0.5)
 
         frames = self._run_pipe_with_cuda_retry("condition", kwargs, progress_callback).frames[0]
+        self._report(progress_callback, "Encoding MP4…", 0.95)
         output = self._output_path(prefix)
         export_to_video(frames, str(output), fps=fps)
+        self._report(progress_callback, "Checking generated video…", 0.98)
         qc = self._record_qc(output, width, height, num_frames, fps=fps)
         state = "PASS" if not qc.fatal and not qc.visual_failure else "REVIEW"
         self._report(progress_callback, f"Saved {output.name} · QC {state}", 1.0)

@@ -19,19 +19,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+import torch
 from PIL import Image
 
 from config import OUTPUTS_DIR
 from engine.video_processor import concatenate_videos_streaming, extract_tail_frames, trim_video_start_frames
 
 Progress = Callable[[str, float], None] | None
-MAX_LONGFORM_SECONDS = 300
-MAX_LONGFORM_SCENES = 96
+MAX_LONGFORM_SECONDS = 600
+MAX_LONGFORM_SCENES = 150
 
 GENERATION_MODES = ("Single Clip", "Continuous Video")
 CLIP_LENGTHS = {
     "4 seconds • Recommended": 97,
     "8 seconds • Max practical": 193,
+    "10 seconds • 2xT4 High Memory": 241,
 }
 
 
@@ -94,8 +96,11 @@ QUALITY_PROFILES: dict[str, RenderProfile] = {
         portrait=(320, 576),
         square=(448, 448),
         frames_per_scene=97,
-        inference_steps=24,
-        guidance_scale=4.5,
+        # A short T4 clip can afford a little more denoising than the old
+        # 24-step preset. This reduces unfinished texture and edge noise before
+        # export without claiming to add detail beyond the model's native frame.
+        inference_steps=28,
+        guidance_scale=4.75,
         delivery_long_edge=1280,
     ),
 }
@@ -111,6 +116,7 @@ DURATION_SECONDS = {
     "3 minutes": 180,
     "4 minutes": 240,
     "5 minutes": 300,
+    "10 minutes": 600,
 }
 
 ASPECT_LABELS = {
@@ -268,9 +274,14 @@ def estimate_auto_seconds(story: str) -> int:
 
 
 def _memory_safe_profile(profile: RenderProfile, clip_frames: int) -> RenderProfile:
-    """Keep High 8-second clips practical on 6 GB VRAM."""
+    """Keep High 8-second clips practical on 6 GB VRAM unless we have multi-GPU."""
     if profile.key != "high" or clip_frames <= 97:
         return profile
+    
+    # If we have multiple GPUs (e.g., dual T4), we have plenty of memory to skip downscaling
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        return profile
+
     return replace(
         profile,
         label="High • 8-second memory-safe • 512×288 native",

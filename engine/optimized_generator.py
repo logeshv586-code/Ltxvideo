@@ -156,9 +156,12 @@ class _OptimizedWorker(VideoGenerator):
     def _run_pipe_with_cuda_retry(self, mode: str, kwargs: dict, progress_callback: Progress):
         """Keep caches warm normally; clear only the worker's GPU after OOM."""
         self._load_pipeline(mode, progress_callback)
+        run_kwargs = self._with_step_progress(kwargs, progress_callback)
         try:
             with torch.inference_mode():
-                return self.pipe(**kwargs)
+                result = self.pipe(**run_kwargs)
+            self._report(progress_callback, "Denoising complete; decoding video frames…", 0.91)
+            return result
         except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
             message = str(exc).lower()
             is_cuda_memory_error = (
@@ -180,7 +183,9 @@ class _OptimizedWorker(VideoGenerator):
                     torch.cuda.empty_cache()
             self._load_pipeline(mode, progress_callback)
             with torch.inference_mode():
-                return self.pipe(**kwargs)
+                result = self.pipe(**self._with_step_progress(kwargs, progress_callback))
+            self._report(progress_callback, "Denoising complete; decoding video frames…", 0.91)
+            return result
 
 
 class OptimizedVideoGenerator:
