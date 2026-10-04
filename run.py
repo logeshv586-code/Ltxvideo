@@ -27,8 +27,14 @@ REQUIRED = {
 def ensure_dependencies() -> None:
     missing = [pkg for module, pkg in REQUIRED.items() if importlib.util.find_spec(module) is None]
     if missing:
-        print("Installing missing runtime packages…")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
+        print(f"Installing missing runtime packages: {missing}…")
+        try:
+            subprocess.check_call(["uv", "pip", "install", "--python", sys.executable, *missing])
+        except Exception:
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-warn-script-location", *missing])
+            except Exception as e:
+                print(f"Warning during package install: {e}")
 
 
 def configure_hardware_profile():
